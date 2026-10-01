@@ -1,0 +1,15 @@
+[package]
+name = "mail-autoconfig"
+description = "Detects mail server settings from an email address"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+mail-core.workspace = true
+serde.workspace = true
+ts-rs.workspace = true
+
+[lints]
+workspace = true

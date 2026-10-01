@@ -1,0 +1,216 @@
+/*
+    Design tokens (AGENTS.md section 8). Feature components use these and never
+    hard-code visual values.
+
+    Light theme: Windows Aero. Dark theme: Longhorn Slate. The dark block is
+    written twice on purpose: once for the OS preference, once for an explicit
+    choice via <html data-theme="slate">.
+*/
+
+:root {
+    color-scheme: light;
+
+    /* Type */
+    --font-ui: 'Segoe UI', 'Selawik', 'Noto Sans', 'Open Sans', 'Helvetica Neue', system-ui, sans-serif;
+    --font-size-small: 12px;
+    --font-size-body: 13px;
+    --font-size-title: 20px;
+
+    /* Space and shape */
+    --space-1: 4px;
+    --space-2: 8px;
+    --space-3: 12px;
+    --space-4: 16px;
+    --space-5: 24px;
+    --space-6: 32px;
+    --radius-control: 3px;
+    --radius-panel: 6px;
+    --radius-window: 8px;
+
+    /* Motion */
+    --motion-fast: 120ms ease-out;
+    --motion-soft: 220ms ease-out;
+
+    /* Backdrop: Frutiger Aero sky and water, drawn in CSS */
+    --backdrop-top: #2f8fd8;
+    --backdrop-middle: #7fd0f0;
+    --backdrop-bottom: #3fb68b;
+    --backdrop-light: rgba(255, 255, 255, 0.75);
+    --backdrop-bokeh: rgba(255, 255, 255, 0.28);
+
+    /* Glass: chrome only, never under long text */
+    --glass-tint: rgba(214, 233, 250, 0.58);
+    --glass-blur: 14px;
+    --glass-border-outer: rgba(20, 50, 90, 0.55);
+    --glass-border-inner: rgba(255, 255, 255, 0.75);
+    --glass-shine: linear-gradient(180deg, rgba(255, 255, 255, 0.6) 0%, rgba(255, 255, 255, 0.12) 42%, rgba(255, 255, 255, 0) 43%);
+    --glass-shadow: 0 12px 34px rgba(8, 35, 70, 0.45), 0 0 0 1px rgba(255, 255, 255, 0.12);
+    --glass-text: #0d2238;
+    --glass-text-shadow: 0 0 8px rgba(255, 255, 255, 0.9);
+
+    /* Solid surfaces: content */
+    --surface: #ffffff;
+    --surface-sunken: #f2f6fb;
+    --surface-border: #a9b9cc;
+    --text: #1b1f24;
+    --text-muted: #55616f;
+    --text-link: #0b5cad;
+
+    /* Controls */
+    --control-face: linear-gradient(180deg, #fdfdfd 0%, #eeeeee 49%, #dcdcdc 50%, #d0d0d0 100%);
+    --control-face-hover: linear-gradient(180deg, #f2faff 0%, #dcf1fd 49%, #b9e3fb 50%, #a5d9f7 100%);
+    --control-face-active: linear-gradient(180deg, #e2f3fc 0%, #c2e4f6 49%, #94cdee 50%, #6fb8e3 100%);
+    --control-border: #7c8794;
+    --control-border-hover: #3c7fb1;
+    --control-inner: rgba(255, 255, 255, 0.85);
+    --control-text: #1b1f24;
+    --control-pressed-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.3);
+
+    --accent-face: linear-gradient(180deg, #8fd0f7 0%, #4fa9e6 49%, #1f86d4 50%, #2d9be0 100%);
+    --accent-face-hover: linear-gradient(180deg, #aee0ff 0%, #6cbcf2 49%, #2f97e4 50%, #49b0f0 100%);
+    --accent-face-active: linear-gradient(180deg, #5aa6d8 0%, #2f84c4 49%, #1568ad 50%, #1c78bf 100%);
+    --accent-border: #134e86;
+    --accent-text: #ffffff;
+    --accent-text-shadow: 0 1px 1px rgba(0, 40, 90, 0.7);
+
+    --field-background: #ffffff;
+    --field-border: #8e9aa8;
+    --field-border-top: #6f7b89;
+    --field-inner-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.12);
+
+    --focus-glow: 0 0 0 1px #3c9be6, 0 0 6px 1px rgba(60, 155, 230, 0.75);
+
+    /* Status */
+    --info-background: #e4f2fd;
+    --info-border: #7db6e6;
+    --success-background: #e3f6e1;
+    --success-border: #6fbf6a;
+    --warning-background: #fff6d6;
+    --warning-border: #d9b23c;
+    --danger-background: #fde6e4;
+    --danger-border: #d9716a;
+    --danger-text: #a3231b;
+}
+
+@media (prefers-color-scheme: dark) {
+    :root:not([data-theme='aero']) {
+        color-scheme: dark;
+
+        --backdrop-top: #10161d;
+        --backdrop-middle: #25323f;
+        --backdrop-bottom: #16303a;
+        --backdrop-light: rgba(140, 190, 230, 0.22);
+        --backdrop-bokeh: rgba(160, 210, 240, 0.1);
+
+        --glass-tint: rgba(38, 46, 56, 0.66);
+        --glass-border-outer: rgba(0, 0, 0, 0.8);
+        --glass-border-inner: rgba(255, 255, 255, 0.2);
+        --glass-shine: linear-gradient(180deg, rgba(255, 255, 255, 0.16) 0%, rgba(255, 255, 255, 0.03) 42%, rgba(255, 255, 255, 0) 43%);
+        --glass-shadow: 0 12px 34px rgba(0, 0, 0, 0.65), 0 0 0 1px rgba(255, 255, 255, 0.05);
+        --glass-text: #e9eef3;
+        --glass-text-shadow: 0 0 8px rgba(0, 0, 0, 0.9);
+
+        --surface: #23282e;
+        --surface-sunken: #1b2025;
+        --surface-border: #0d1013;
+        --text: #e6eaee;
+        --text-muted: #a3adb8;
+        --text-link: #7cc0f5;
+
+        --control-face: linear-gradient(180deg, #5a626b 0%, #474e56 49%, #363c43 50%, #2f343a 100%);
+        --control-face-hover: linear-gradient(180deg, #6b7885 0%, #55626f 49%, #3f4c59 50%, #384552 100%);
+        --control-face-active: linear-gradient(180deg, #2c3238 0%, #2a2f35 49%, #22262b 50%, #262b30 100%);
+        --control-border: #0b0d10;
+        --control-border-hover: #5aa3d8;
+        --control-inner: rgba(255, 255, 255, 0.16);
+        --control-text: #eef1f4;
+
+        --accent-face: linear-gradient(180deg, #5f9fcf 0%, #3a7fb5 49%, #1f629b 50%, #2a73ad 100%);
+        --accent-face-hover: linear-gradient(180deg, #7cb7e2 0%, #4f95c9 49%, #2b76b3 50%, #3b89c6 100%);
+        --accent-face-active: linear-gradient(180deg, #2f6893 0%, #25587f 49%, #17456b 50%, #1d517a 100%);
+        --accent-border: #06121d;
+
+        --field-background: #171b1f;
+        --field-border: #07090b;
+        --field-border-top: #000000;
+        --field-inner-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.6);
+
+        --info-background: #1d3345;
+        --info-border: #3f7fb0;
+        --success-background: #1e3a23;
+        --success-border: #4a9a4f;
+        --warning-background: #40361a;
+        --warning-border: #b08f2c;
+        --danger-background: #45211f;
+        --danger-border: #b3524b;
+        --danger-text: #ff9d95;
+    }
+}
+
+:root[data-theme='slate'] {
+    color-scheme: dark;
+
+    --backdrop-top: #10161d;
+    --backdrop-middle: #25323f;
+    --backdrop-bottom: #16303a;
+    --backdrop-light: rgba(140, 190, 230, 0.22);
+    --backdrop-bokeh: rgba(160, 210, 240, 0.1);
+
+    --glass-tint: rgba(38, 46, 56, 0.66);
+    --glass-border-outer: rgba(0, 0, 0, 0.8);
+    --glass-border-inner: rgba(255, 255, 255, 0.2);
+    --glass-shine: linear-gradient(180deg, rgba(255, 255, 255, 0.16) 0%, rgba(255, 255, 255, 0.03) 42%, rgba(255, 255, 255, 0) 43%);
+    --glass-shadow: 0 12px 34px rgba(0, 0, 0, 0.65), 0 0 0 1px rgba(255, 255, 255, 0.05);
+    --glass-text: #e9eef3;
+    --glass-text-shadow: 0 0 8px rgba(0, 0, 0, 0.9);
+
+    --surface: #23282e;
+    --surface-sunken: #1b2025;
+    --surface-border: #0d1013;
+    --text: #e6eaee;
+    --text-muted: #a3adb8;
+    --text-link: #7cc0f5;
+
+    --control-face: linear-gradient(180deg, #5a626b 0%, #474e56 49%, #363c43 50%, #2f343a 100%);
+    --control-face-hover: linear-gradient(180deg, #6b7885 0%, #55626f 49%, #3f4c59 50%, #384552 100%);
+    --control-face-active: linear-gradient(180deg, #2c3238 0%, #2a2f35 49%, #22262b 50%, #262b30 100%);
+    --control-border: #0b0d10;
+    --control-border-hover: #5aa3d8;
+    --control-inner: rgba(255, 255, 255, 0.16);
+    --control-text: #eef1f4;
+
+    --accent-face: linear-gradient(180deg, #5f9fcf 0%, #3a7fb5 49%, #1f629b 50%, #2a73ad 100%);
+    --accent-face-hover: linear-gradient(180deg, #7cb7e2 0%, #4f95c9 49%, #2b76b3 50%, #3b89c6 100%);
+    --accent-face-active: linear-gradient(180deg, #2f6893 0%, #25587f 49%, #17456b 50%, #1d517a 100%);
+    --accent-border: #06121d;
+
+    --field-background: #171b1f;
+    --field-border: #07090b;
+    --field-border-top: #000000;
+    --field-inner-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.6);
+
+    --info-background: #1d3345;
+    --info-border: #3f7fb0;
+    --success-background: #1e3a23;
+    --success-border: #4a9a4f;
+    --warning-background: #40361a;
+    --warning-border: #b08f2c;
+    --danger-background: #45211f;
+    --danger-border: #b3524b;
+    --danger-text: #ff9d95;
+}
+
+/* Users who ask for less transparency get opaque chrome. */
+@media (prefers-reduced-transparency: reduce) {
+    :root {
+        --glass-blur: 0px;
+        --glass-tint: var(--surface-sunken);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    :root {
+        --motion-fast: 0ms;
+        --motion-soft: 0ms;
+    }
+}

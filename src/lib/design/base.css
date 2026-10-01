@@ -1,0 +1,47 @@
+@import './tokens.css';
+
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+}
+
+html,
+body {
+    height: 100%;
+    margin: 0;
+}
+
+body {
+    font-family: var(--font-ui);
+    font-size: var(--font-size-body);
+    line-height: 1.45;
+    color: var(--text);
+    background: var(--backdrop-middle);
+    /* A desktop app, not a document: no rubber-band scrolling or accidental text selection in chrome. */
+    overflow: hidden;
+    user-select: none;
+    -webkit-user-select: none;
+    cursor: default;
+}
+
+input,
+select,
+button,
+textarea {
+    font: inherit;
+    color: inherit;
+}
+
+input,
+textarea {
+    user-select: text;
+    -webkit-user-select: text;
+}
+
+h1,
+h2,
+h3,
+p {
+    margin: 0;
+}
