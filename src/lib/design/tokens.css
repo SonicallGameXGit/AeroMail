@@ -64,6 +64,16 @@
     --control-border-hover: #3c7fb1;
     --control-inner: rgba(255, 255, 255, 0.85);
     --control-text: #1b1f24;
+
+    /* Rows: lists of folders and messages */
+    --row-hover-face: linear-gradient(180deg, #fafcff 0%, #ebf3fd 100%);
+    --row-hover-border: #b8d6fb;
+    --row-selected-face: linear-gradient(180deg, #dcebfc 0%, #c1dbfc 100%);
+    --row-selected-border: #7da2ce;
+    --row-separator: #e6ecf3;
+    --unread-mark: #1f86d4;
+    --flag-mark: #e08a00;
+    --overlay: rgba(10, 30, 60, 0.35);
     --control-pressed-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.3);
 
     --accent-face: linear-gradient(180deg, #8fd0f7 0%, #4fa9e6 49%, #1f86d4 50%, #2d9be0 100%);
@@ -125,6 +135,15 @@
         --control-inner: rgba(255, 255, 255, 0.16);
         --control-text: #eef1f4;
 
+        --row-hover-face: linear-gradient(180deg, #2c333b 0%, #272e35 100%);
+        --row-hover-border: #3d4954;
+        --row-selected-face: linear-gradient(180deg, #34526e 0%, #2a4560 100%);
+        --row-selected-border: #4d86b8;
+        --row-separator: #2c3239;
+        --unread-mark: #5fb0ee;
+        --flag-mark: #f0a030;
+        --overlay: rgba(0, 0, 0, 0.55);
+
         --accent-face: linear-gradient(180deg, #5f9fcf 0%, #3a7fb5 49%, #1f629b 50%, #2a73ad 100%);
         --accent-face-hover: linear-gradient(180deg, #7cb7e2 0%, #4f95c9 49%, #2b76b3 50%, #3b89c6 100%);
         --accent-face-active: linear-gradient(180deg, #2f6893 0%, #25587f 49%, #17456b 50%, #1d517a 100%);
@@ -178,6 +197,15 @@
     --control-border-hover: #5aa3d8;
     --control-inner: rgba(255, 255, 255, 0.16);
     --control-text: #eef1f4;
+
+    --row-hover-face: linear-gradient(180deg, #2c333b 0%, #272e35 100%);
+    --row-hover-border: #3d4954;
+    --row-selected-face: linear-gradient(180deg, #34526e 0%, #2a4560 100%);
+    --row-selected-border: #4d86b8;
+    --row-separator: #2c3239;
+    --unread-mark: #5fb0ee;
+    --flag-mark: #f0a030;
+    --overlay: rgba(0, 0, 0, 0.55);
 
     --accent-face: linear-gradient(180deg, #5f9fcf 0%, #3a7fb5 49%, #1f629b 50%, #2a73ad 100%);
     --accent-face-hover: linear-gradient(180deg, #7cb7e2 0%, #4f95c9 49%, #2b76b3 50%, #3b89c6 100%);

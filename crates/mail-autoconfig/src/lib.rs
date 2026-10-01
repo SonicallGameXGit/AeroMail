@@ -130,7 +130,8 @@ mod tests {
         assert_eq!(settings.incoming.host, "imap.gmail.com");
         assert_eq!(settings.incoming.port, 993);
         assert_eq!(settings.incoming.security, Security::Tls);
-        assert_eq!(settings.incoming.auth, AuthMethod::OAuth2);
+        assert_eq!(settings.incoming.auth, AuthMethod::Password);
+        assert_eq!(detection.password_kind, PasswordKind::AppPassword);
         assert_eq!(settings.incoming.username, "John.Doe@gmail.com");
         assert_eq!(settings.outgoing.protocol, Protocol::Smtp);
         assert_eq!(settings.outgoing.host, "smtp.gmail.com");

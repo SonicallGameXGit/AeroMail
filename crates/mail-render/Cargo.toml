@@ -1,0 +1,18 @@
+[package]
+name = "mail-render"
+description = "MIME parsing, HTML sanitising and message composing"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+mail-core.workspace = true
+mail-parser = "0.11"
+mail-builder = { version = "1", default-features = false }
+base64 = "0.22"
+ammonia = "4"
+
+
+[lints]
+workspace = true

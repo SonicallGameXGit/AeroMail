@@ -1,13 +1,33 @@
 <script lang="ts">
-    import type { AccountSettings, AddressError, Api, Detection, Protocol, Security, ServerRole, SettingsIssue } from '$lib/api'
+    import { toMailError } from '$lib/api'
+    import type {
+        Account,
+        AccountSettings,
+        AddressError,
+        Api,
+        Detection,
+        MailError,
+        Protocol,
+        Security,
+        ServerRole,
+        SettingsIssue,
+    } from '$lib/api'
     import Button from '$lib/design/Button.svelte'
     import Notice from '$lib/design/Notice.svelte'
     import TextField from '$lib/design/TextField.svelte'
+    import { errorMessage } from '$lib/features/workspace/workspace'
     import { t } from '$lib/i18n'
     import ServerForm from './ServerForm.svelte'
     import { domainOf, serverOf, switchIncomingProtocol, switchSecurity, withServer } from './setup'
 
-    let { api }: { api: Api } = $props()
+    type Props = {
+        api: Api
+        onadded: (account: Account) => void
+        // Present when the setup can be left, i.e. another account already exists.
+        oncancel?: () => void
+    }
+
+    let { api, onadded, oncancel }: Props = $props()
 
     const roles: ServerRole[] = ['Incoming', 'Outgoing']
 
@@ -19,11 +39,13 @@
     // null while the user is still on the address step.
     let detection = $state<Detection | null>(null)
     let settings = $state<AccountSettings | null>(null)
+    let password = $state('')
     // true when the user asked for manual setup: detection is then only a pre-fill.
     let manual = $state(false)
     let editing = $state(false)
-    // null until the settings were checked; any edit resets it.
-    let issues = $state<SettingsIssue[] | null>(null)
+    // Problems found before connecting; any edit clears them.
+    let issues = $state<SettingsIssue[]>([])
+    let connectError = $state<MailError | null>(null)
 
     const run = async (action: () => Promise<void>) => {
         busy = true
@@ -47,6 +69,11 @@
         addressError = null
     }
 
+    const typePassword = (value: string) => {
+        password = value
+        connectError = null
+    }
+
     const toggleEditing = () => {
         editing = !editing
     }
@@ -64,19 +91,23 @@
         settings = result.detection.settings
         manual = asManual
         editing = asManual || result.detection.source === 'Guess'
-        issues = null
+        issues = []
+        connectError = null
     })
 
     const back = () => {
         detection = null
         settings = null
-        issues = null
+        password = ''
+        issues = []
+        connectError = null
         failed = false
     }
 
     const update = (next: AccountSettings) => {
         settings = next
-        issues = null
+        issues = []
+        connectError = null
     }
 
     const changeProtocol = (current: AccountSettings, found: Detection, protocol: Protocol) => run(async () => {
@@ -87,10 +118,23 @@
         update(await switchSecurity(api, current, role, security))
     })
 
-    const check = (current: AccountSettings) => run(async () => {
+    const connect = (current: AccountSettings) => run(async () => {
+        connectError = null
         issues = await api.validateAccountSettings(current)
         if (issues.some((issue) => issue.blocking)) {
             editing = true
+
+            return
+        }
+
+        try {
+            onadded(await api.addAccount(current, password))
+        } catch (caught) {
+            connectError = toMailError(caught)
+            // The fix is almost always in the settings, so put them in reach.
+            if (connectError.kind !== 'Auth') {
+                editing = true
+            }
         }
     })
 </script>
@@ -121,14 +165,18 @@
         {/if}
 
         <div class="actions">
+            {#if oncancel !== undefined}
+                <Button variant="link" disabled={busy} onclick={oncancel}>{t('setup.cancel')}</Button>
+            {/if}
             <Button variant="link" disabled={busy} onclick={() => lookUp(true)}>{t('setup.manual')}</Button>
+            <span class="spacer"></span>
             <Button variant="accent" type="submit" disabled={busy}>{t('setup.continue')}</Button>
         </div>
     </form>
 {:else}
     {@const current = settings}
     {@const found = detection}
-    <form class="stack" novalidate onsubmit={(event) => submit(event, () => check(current))}>
+    <form class="stack" novalidate onsubmit={(event) => submit(event, () => connect(current))}>
         <div>
             {#if manual}
                 <h1>{t('setup.manualTitle')}</h1>
@@ -142,8 +190,13 @@
             {/if}
         </div>
 
-        {#if found.passwordKind === 'AppPassword' && current.incoming.auth === 'Password'}
+        {#if current.incoming.auth === 'OAuth2' || current.outgoing.auth === 'OAuth2'}
+            <Notice kind="warning">{t('setup.oauthUnavailable')}</Notice>
+        {:else if found.passwordKind === 'AppPassword'}
             <Notice>{t('setup.appPassword')}</Notice>
+        {/if}
+        {#if current.incoming.protocol === 'Pop3'}
+            <Notice kind="warning">{t('setup.pop3Unavailable')}</Notice>
         {/if}
 
         <TextField
@@ -153,12 +206,23 @@
             oninput={(displayName) => update({ ...current, displayName })}
         />
 
+        <div>
+            <TextField
+                label={t('setup.password')}
+                type="password"
+                value={password}
+                invalid={connectError !== null && connectError.kind === 'Auth'}
+                oninput={typePassword}
+            />
+            <p class="hint">{t('setup.passwordHint')}</p>
+        </div>
+
         {#if editing}
             {#each roles as role (role)}
                 <ServerForm
                     {role}
                     server={serverOf(current, role)}
-                    issues={issues ?? []}
+                    {issues}
                     onchange={(server) => update(withServer(current, role, server))}
                     onprotocol={(protocol) => changeProtocol(current, found, protocol)}
                     onsecurity={(security) => changeSecurity(current, role, security)}
@@ -174,15 +238,16 @@
             </dl>
         {/if}
 
-        {#if issues !== null}
-            {#if issues.length === 0}
-                <Notice kind="success">{t('setup.valid')}</Notice>
-            {/if}
-            {#each issues as issue (issue.server + issue.kind)}
-                <Notice kind={issue.blocking ? 'danger' : 'warning'}>
-                    <strong>{t(`role.${issue.server}`)}:</strong> {t(`issue.${issue.kind}`)}
-                </Notice>
-            {/each}
+        {#each issues as issue (issue.server + issue.kind)}
+            <Notice kind={issue.blocking ? 'danger' : 'warning'}>
+                <strong>{t(`role.${issue.server}`)}:</strong> {t(`issue.${issue.kind}`)}
+            </Notice>
+        {/each}
+        {#if connectError !== null}
+            <Notice kind="danger">
+                {errorMessage(connectError)}
+                <small>{t('error.details')}: {connectError.detail}</small>
+            </Notice>
         {/if}
         {#if failed}
             <Notice kind="danger">{t('setup.failed')}</Notice>
@@ -194,7 +259,9 @@
             <Button disabled={busy} onclick={toggleEditing}>
                 {editing ? t('setup.hide') : t('setup.edit')}
             </Button>
-            <Button variant="accent" type="submit" disabled={busy}>{t('setup.check')}</Button>
+            <Button variant="accent" type="submit" disabled={busy}>
+                {busy ? t('setup.connecting') : t('setup.connect')}
+            </Button>
         </div>
     </form>
 {/if}
@@ -213,6 +280,12 @@
 
     .muted {
         margin-top: var(--space-1);
+        color: var(--text-muted);
+    }
+
+    .hint {
+        margin-top: var(--space-1);
+        font-size: var(--font-size-small);
         color: var(--text-muted);
     }
 
@@ -238,10 +311,16 @@
         overflow-wrap: anywhere;
     }
 
+    small {
+        display: block;
+        margin-top: var(--space-1);
+        color: var(--text-muted);
+        overflow-wrap: anywhere;
+    }
+
     .actions {
         display: flex;
         align-items: center;
-        justify-content: space-between;
         gap: var(--space-2);
     }
 

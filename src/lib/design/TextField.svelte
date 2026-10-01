@@ -2,7 +2,7 @@
     type Props = {
         label: string
         value: string
-        type?: 'text' | 'email'
+        type?: 'text' | 'email' | 'password'
         inputmode?: 'text' | 'email' | 'numeric'
         placeholder?: string
         autofocus?: boolean

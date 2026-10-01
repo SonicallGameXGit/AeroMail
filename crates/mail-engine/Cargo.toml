@@ -1,0 +1,21 @@
+[package]
+name = "mail-engine"
+description = "Ties storage, transports and rendering into the operations the UI calls"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+mail-core.workspace = true
+mail-store.workspace = true
+mail-render.workspace = true
+async-trait.workspace = true
+tokio.workspace = true
+
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+
+[lints]
+workspace = true

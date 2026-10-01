@@ -9,6 +9,7 @@ license.workspace = true
 [dependencies]
 serde.workspace = true
 thiserror.workspace = true
+async-trait.workspace = true
 ts-rs.workspace = true
 
 [dev-dependencies]

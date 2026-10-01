@@ -1,0 +1,17 @@
+[package]
+name = "mail-store"
+description = "SQLite storage for accounts, folders and cached messages"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+mail-core.workspace = true
+rusqlite = { version = "0.40", features = ["bundled"] }
+serde_json.workspace = true
+thiserror.workspace = true
+
+
+[lints]
+workspace = true

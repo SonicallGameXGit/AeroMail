@@ -46,7 +46,9 @@ pub(crate) const PROVIDERS: &[Provider] = &[
         imap: tls("imap.gmail.com", 993),
         pop3: Some(tls("pop.gmail.com", 995)),
         smtp: tls("smtp.gmail.com", 465),
-        auth: AuthMethod::OAuth2,
+        // Gmail also offers OAuth2; until the app supports it, an app
+        // password is the way in.
+        auth: AuthMethod::Password,
         password_kind: PasswordKind::AppPassword,
     },
     Provider {

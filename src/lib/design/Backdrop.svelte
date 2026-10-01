@@ -2,10 +2,11 @@
     import type { Snippet } from 'svelte'
 
     // Frutiger Aero imagery: only behind glass chrome, never under mail content.
-    let { children }: { children: Snippet } = $props()
+    // `fill` lets the content take the whole window instead of floating in the centre.
+    let { children, fill = false }: { children: Snippet, fill?: boolean } = $props()
 </script>
 
-<div class="backdrop">
+<div class="backdrop" class:fill>
     <div class="bokeh" aria-hidden="true"></div>
     {@render children()}
 </div>
@@ -21,6 +22,12 @@
         background:
             radial-gradient(ellipse 90% 55% at 50% -10%, var(--backdrop-light), transparent 70%),
             linear-gradient(180deg, var(--backdrop-top) 0%, var(--backdrop-middle) 55%, var(--backdrop-bottom) 100%);
+    }
+
+    .fill {
+        place-items: stretch;
+        padding: var(--space-2);
+        overflow: hidden;
     }
 
     .bokeh {

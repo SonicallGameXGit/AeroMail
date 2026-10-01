@@ -83,8 +83,6 @@ Web target note: browsers cannot open raw IMAP / SMTP sockets, so a web build wo
 
 ### 5.1 Layout
 
-Exists today:
-
 ```
 MailClient/
     AGENTS.md
@@ -92,27 +90,30 @@ MailClient/
     Cargo.toml                  Cargo workspace (crates/*, src-tauri), shared lints
     .cargo/config.toml          where the generated TypeScript bindings go
     crates/
-        mail-core/              domain types and rules: addresses, account settings, validation
+        mail-core/              domain types and rules; the traits for servers and keychain; MailError
         mail-autoconfig/        settings detection: built-in provider table, guess for unknown domains
-    src-tauri/                  thin shell: commands forward to the crates; platform/ holds per-OS code
+        mail-protocols/         real IMAP and SMTP behind the core traits (NetConnector)
+        mail-store/             SQLite: accounts, folders, cached messages
+        mail-render/            header parsing, HTML sanitising, attachments, composing raw messages
+        mail-engine/            the operations the UI calls; owns the store, uses the traits
+    src-tauri/                  thin shell: commands forward to the engine; keychain; platform/ per-OS code
     src/                        SvelteKit UI (SPA, no SSR)
         lib/
             api/                the only place that talks to the core
                 generated/      TypeScript types generated from Rust - never edit by hand
-            design/             tokens.css, base.css and the primitives (Button, TextField, GlassWindow, ...)
+            design/             tokens.css, base.css and the primitives (Button, TextField, GlassWindow, Modal, ...)
             i18n/               `t()` and the dictionaries
             features/
-                accounts/       account setup screen, its logic and tests
+                accounts/       account setup screen, its logic, the fake Api for tests
+                workspace/      folders, message list, reader, composer
         routes/
 ```
 
-Planned, created when first needed (do not add empty crates):
+Dependency direction: `mail-core` <- everything; `mail-engine` uses `mail-store` and `mail-render` directly and reaches servers and the keychain only through the traits in `mail-core::transport`; only `src-tauri` knows `mail-protocols` and the keychain library.
+
+Planned, created when first needed (do not add empty crates or folders):
 
 ```
-    crates/
-        mail-protocols/         IMAP, SMTP, POP3 clients behind traits
-        mail-store/             SQLite storage, migrations, search
-        mail-render/            MIME parsing, HTML sanitising, charset handling
     tests/                      cross-crate integration tests, fixtures (.eml samples)
     docs/                       longer design notes when a topic outgrows this file
 ```
@@ -122,7 +123,9 @@ Planned, created when first needed (do not add empty crates):
 - **The core is headless.** Everything that is not presentation lives in `crates/`. No crate under `crates/` depends on Tauri or on the UI. If logic can be written in the core, it must be.
 - **`src-tauri` is thin.** It converts commands and events and wires native features. No business logic.
 - **The UI talks to the core through `src/lib/api` only.** Components never call Tauri `invoke` directly. This is what keeps mobile and a future web build cheap.
-- **I/O behind traits.** Network, storage, clock and keychain are traits in the core, with real and fake implementations, so everything is testable without a network.
+- **I/O behind traits.** Mail servers and the keychain are traits in `mail-core::transport`, with real and fake implementations, so the engine is testable without a network. Storage is not behind a trait: it is always SQLite, and tests use it in memory.
+- **One error type crosses boundaries**: `MailError { kind, server, detail }`. The UI words the message from `kind` and `server`; `detail` is the technical line. Add an `ErrorKind` rather than encoding meaning in `detail`.
+- **Database ids are never reused** (`AUTOINCREMENT`): the UI and the keychain hold ids.
 - **Types cross the boundary once.** Rust types that reach the UI derive `ts_rs::TS` with `#[ts(export)]`; `cargo test` writes them to `src/lib/api/generated`. Commit the generated files, never edit them, and re-export them from `src/lib/api/index.ts`.
 - **Components get the API as a prop** (`api: Api`) instead of importing the Tauri implementation, so tests pass a fake (`features/accounts/fakeApi.ts`).
 - **Manual path first.** For any smart feature, build the manual path first and the smart layer on top of it (2.2).
@@ -131,8 +134,9 @@ Planned, created when first needed (do not add empty crates):
 
 ### 5.3 Security and privacy
 
-- Credentials and OAuth tokens only in the OS keychain. Never in SQLite, logs, config files, error messages or crash reports.
-- Message HTML is untrusted input: sanitise it, render it isolated from the app (no script execution, no access to app APIs), block remote content by default with a visible per-message / per-sender opt-in.
+- Credentials and OAuth tokens only in the OS keychain (service `app.mailclient.desktop`, key `account-<id>`). Never in SQLite, logs, config files, error messages or crash reports.
+- Message HTML is untrusted input, with two layers that must both stay: `mail-render` sanitises it (and strips remote images unless allowed), and the UI shows it in an `<iframe sandbox="allow-same-origin">` (never `allow-scripts`) whose own content policy allows only inline styles and images. Remote content is blocked by default with a visible per-message opt-in. Links are caught from outside the frame and opened in the system browser, `http(s)` and `mailto` only.
+- TLS certificates are verified against the bundled Mozilla roots (`webpki-roots`); there is no "accept anyway" path yet.
 - TLS is required by default; plaintext or invalid certificates need an explicit, clearly worded user decision.
 - No telemetry and no network calls to anything but the user's mail providers and the documented autoconfig lookups, unless the owner asks for it and the user opts in.
 - Never log message bodies or addresses at default log level.
@@ -142,7 +146,9 @@ Planned, created when first needed (do not add empty crates):
 Code is not done until it is tested. The goal is to verify behaviour in small parts **without launching the app and clicking buttons**.
 
 - **Rust unit tests** next to the code for every parser, state machine and decision function.
-- **Rust integration tests** for protocols against fakes and against a real local mail server in a container; sync engine against fake transports; storage against in-memory / temp SQLite.
+- **Engine tests** (`mail-engine/src/tests.rs`) run every operation against the in-memory fakes in `testing.rs` and a real in-memory SQLite. New engine behaviour gets a test here first.
+- **Protocol tests** (`mail-protocols`) run the real IMAP and SMTP clients against scripted servers on local sockets (`fake_server.rs`). No container needed.
+- **Opt-in tests** (`#[ignore]`): `cargo test -p mail-protocols -- --ignored` checks TLS and STARTTLS against real public servers with a bogus login; `cargo test -p mailclient -- --ignored` round-trips through the real OS keychain. Run them after touching TLS, connection or keychain code.
 - **Fixtures**: real-world-shaped `.eml` samples (odd charsets, nested multipart, broken HTML, huge attachments) under `tests/fixtures`. Every rendering or parsing bug fixed gets a fixture.
 - **Autoconfig**: table-driven tests per provider, including the failure -> manual fallback path.
 - **Frontend**: Vitest. `*.spec.ts` are plain unit tests (Node); `*.svelte.spec.ts` are component tests that run in a real headless Chromium with a fake `Api`. One-time setup: `pnpm exec playwright install chromium`.
@@ -277,17 +283,27 @@ Each must work on Windows, Linux and macOS, behind one interface (5.2):
 - Report honestly: what was done, what was verified and how, what was not. Failing tests are reported as failing.
 - Update this file when a decision is made or changed (section 12).
 
-## 11. Roadmap (high level)
+## 11. Roadmap and current state
 
-1. Agent docs (this file).
-2. Decide visual style (section 8) - done.
-3. Scaffold workspace: crates, Tauri shell, SvelteKit UI, test harness - done. CI on all three desktop OSes - not done.
-4. Core, headless and tested: accounts -> manual IMAP / SMTP / POP3 -> storage -> sync -> MIME / rendering. Done so far: account settings types and offline validation. **Next: real connections** (IMAP / SMTP / POP3 login with a password kept in the OS keychain), then OAuth2 for Gmail and Outlook.
-5. Autoconfig on top of manual setup. Done: built-in provider table with a guess fallback. Later: online lookups (provider autoconfig files, DNS SRV) behind a trait.
-6. Design system, then UI: account setup, mail list, reader, composer, settings. Done so far: tokens for both themes, basic primitives, the account setup screen up to checking settings (it does not connect yet).
-7. Native integration: notifications, sounds, tray, autostart, `mailto:`.
-8. Mobile.
-9. Web (optional).
+Works today (IMAP + SMTP, password sign-in):
+
+- Account setup: detection, manual form, real sign-in to both servers, password in the keychain; several accounts; removing an account.
+- Folders with roles and unread counts; message list (newest 50, "load older"); cached for offline reading; refresh on demand and every 2 minutes for the open folder.
+- Reading: plain text and sanitised HTML, inline images, remote images on request, attachments saved to disk.
+- Read / unread, flag, delete (to Trash, final inside Trash), archive, move to folder.
+- Writing: new message, reply, reply all, forward (plain text), Cc / Bcc, copy saved to Sent.
+
+Not built yet, roughly in this order:
+
+1. **OAuth2** for Gmail and Outlook (Outlook.com accepts nothing else; Gmail works with an app password meanwhile). Needs client ids registered by the owner.
+2. **POP3** (the form offers it; connecting answers "not available yet").
+3. Search, threading, unified inbox, multi-select and bulk actions, undo, drafts, signatures.
+4. Composer: attachments, rich text. Marking the original as answered after a reply.
+5. Native integration: new-mail notifications, sounds, tray, autostart, `mailto:`, `.eml`. IMAP IDLE for push.
+6. Settings screen, keyboard shortcuts, theme switch, bundled font, glossy icons (toolbar buttons are text for now).
+7. Online autoconfig lookups (provider autoconfig files, DNS SRV) behind a trait.
+8. Self-signed / private-CA certificates with an explicit user decision.
+9. CI on Windows, Linux and macOS. Mobile (the keychain library has no Android backend in the version used). Web.
 
 ## 12. Decision log
 
@@ -300,3 +316,7 @@ Newest last. One line per decision: date, decision, reason.
 - 2026-10-01 - Unknown domains produce a guessed, editable pre-fill (`imap.` / `smtp.` / `pop.` + domain) instead of an error. Reason: section 2.2, detection failure must lead into the manual form.
 - 2026-10-01 - Linux startup sets `WEBKIT_DISABLE_DMABUF_RENDERER=1` only on Wayland with the proprietary NVIDIA driver, unless the user set it (`src-tauri/src/platform/linux.rs`). Reason: WebKitGTK otherwise dies with "Error 71 (Protocol error) dispatching to Wayland display".
 - 2026-10-01 - Dev server port is 5175 (`vite.config.ts` and `devUrl` in `src-tauri/tauri.conf.json` must match). Reason: 5173 is used by another project on the owner's machine.
+- 2026-10-01 - Mail libraries: `async-imap`, `lettre` (SMTP), `mail-parser`, `mail-builder`, `ammonia`, `rusqlite` (bundled SQLite), `keyring` 3, TLS through `rustls` + `webpki-roots`. Reason: maintained, pure Rust TLS (no OpenSSL to ship on any platform).
+- 2026-10-01 - Sync model: the folder's full UID list is fetched, a window of the newest messages is cached and reconciled (new, gone, flags); bodies are downloaded on first open and kept. Reason: simple and correct; revisit (CONDSTORE, IDLE) when large mailboxes or push matter.
+- 2026-10-01 - One password is used for both the incoming and the outgoing server of an account. Reason: true for practically every provider; split it when a real case appears.
+- 2026-10-01 - Gmail is listed with password sign-in (app password) until OAuth2 exists. Reason: it is the only way that works today.

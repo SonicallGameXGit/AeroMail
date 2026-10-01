@@ -4,3 +4,7 @@
 
 pub mod account;
 pub mod address;
+pub mod draft;
+pub mod error;
+pub mod mail;
+pub mod transport;
