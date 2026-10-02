@@ -222,6 +222,14 @@ describe('message frame', () => {
         expect(allowed).toContain('img-src data: http: https:"')
     })
 
+    it('leaves the layout of a message to the message', () => {
+        const page = frameDocument('<p>Hi</p>', false)
+
+        expect(page).not.toContain('max-width')
+        expect(page).not.toContain('height:auto')
+        expect(page).not.toContain('overflow-wrap:anywhere')
+    })
+
     it('lets only web and mail links leave the app', () => {
         expect(isSafeLink('https://example.com')).toBe(true)
         expect(isSafeLink('HTTP://example.com')).toBe(true)

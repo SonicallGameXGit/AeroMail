@@ -36,7 +36,15 @@ pub(crate) fn sanitise(
         // Layout of real-world mail depends on these presentational bits.
         .add_tags(["font", "center", "style"])
         .rm_clean_content_tags(["style"])
+        // The page title is not part of the message; without this its text
+        // would be left behind at the top of the body.
+        .add_clean_content_tags(["title"])
         .add_generic_attributes([
+            // The message's own style sheet is written against these. They
+            // are harmless inside the frame: it runs no scripts and holds
+            // nothing but the message.
+            "class",
+            "id",
             "style",
             "align",
             "valign",
@@ -47,6 +55,10 @@ pub(crate) fn sanitise(
             "border",
             "cellpadding",
             "cellspacing",
+            "hspace",
+            "vspace",
+            "nowrap",
+            "role",
             "dir",
         ])
         .add_tag_attributes("font", ["face", "size"])
@@ -125,6 +137,30 @@ mod tests {
         assert!(result.html.contains("bgcolor=\"#fff\""));
         assert!(result.html.contains("style=\"color: red\""));
         assert!(!result.remote_blocked);
+    }
+
+    #[test]
+    fn keeps_what_the_style_sheet_selects_by() {
+        let result = clean(
+            "<style>.pad{padding:24px 32px}#top{font-size:22px}</style>\
+             <table><tr><td class=\"pad\" id=\"top\">x</td></tr></table>",
+            false,
+        );
+
+        assert!(result.html.contains(".pad{padding:24px 32px}"));
+        assert!(result.html.contains("class=\"pad\""));
+        assert!(result.html.contains("id=\"top\""));
+    }
+
+    #[test]
+    fn page_title_is_not_shown_as_text() {
+        let result = clean(
+            "<html><head><title>Shop\n</title></head><body><p>Hi</p></body></html>",
+            false,
+        );
+
+        assert!(!result.html.contains("Shop"));
+        assert!(result.html.contains("<p>Hi</p>"));
     }
 
     #[test]

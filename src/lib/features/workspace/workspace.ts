@@ -247,8 +247,12 @@ export const errorMessage = (error: MailError): string => {
 export const frameDocument = (html: string, allowRemote: boolean): string => {
     const images = allowRemote ? 'data: http: https:' : 'data:'
     const policy = `default-src 'none'; style-src 'unsafe-inline'; img-src ${images}`
+    // Only defaults for mail that brings no styling of its own: the message's
+    // style sheet comes later and wins. Nothing here may change how a laid-out
+    // message is measured (no size limits on images, and `break-word` rather
+    // than `anywhere`, which would let table columns collapse).
     const style = 'body{margin:12px;font-family:\'Segoe UI\',\'Noto Sans\',sans-serif;font-size:13px;'
-        + 'color:#1b1f24;background:#ffffff;overflow-wrap:anywhere}img{max-width:100%;height:auto}'
+        + 'color:#1b1f24;background:#ffffff;overflow-wrap:break-word}'
         + 'a{color:#0b5cad}blockquote{margin:0 0 0 8px;padding-left:8px;border-left:2px solid #a9b9cc}'
 
     return '<!doctype html><html><head><meta charset="utf-8">'

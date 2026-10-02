@@ -101,6 +101,8 @@ MailClient/
         icons/
     electron-builder.json       packaging: installers with the core binary next to the app
     scripts/                    what `pnpm dev`, `pnpm build` and `pnpm test:app` run
+    tests/
+        fixtures/               `.eml` samples, one per rendering or parsing bug fixed
     src/                        SvelteKit UI (SPA, no SSR)
         lib/
             api/                the only place that talks to the core (`bridge.ts`: what the shell exposes)
@@ -118,7 +120,7 @@ Dependency direction: `mail-core` <- everything; `mail-engine` uses `mail-store`
 Planned, created when first needed (do not add empty crates or folders):
 
 ```
-    tests/                      cross-crate integration tests, fixtures (.eml samples)
+    tests/                      cross-crate integration tests (only `fixtures/` exists so far)
     docs/                       longer design notes when a topic outgrows this file
 ```
 
@@ -353,3 +355,4 @@ Newest last. One line per decision: date, decision, reason.
 - 2026-10-02 - The organisation's domain is approximated by walking up to two parent domains instead of using the public suffix list. Reason: no extra data to ship; a lookup on a bare suffix like `co.uk` simply finds nothing.
 - 2026-10-02 - Avatars (initials and logos alike) sit under one glass overlay drawn by `Avatar.svelte`. Reason: foreign logos look part of the theme without being altered.
 - 2026-10-02 - The settings table (`settings`, name / value) exists in SQLite from this change; `sender_pictures` is its first entry.
+- 2026-10-02 - The sanitiser keeps `class` and `id`, and the message frame adds only defaults the message's own style sheet overrides (no image size limits). Reason: newsletters are laid out by class rules in their `<style>` block and lost their paddings and font sizes; the frame runs no scripts and holds only the message, so these attributes cannot reach the app.

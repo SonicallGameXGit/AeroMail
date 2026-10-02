@@ -289,6 +289,17 @@ JVBERi0xLjQ=\r\n\
     }
 
     #[test]
+    fn newsletter_keeps_its_class_based_layout() {
+        let raw = include_bytes!("../../../tests/fixtures/class-styled-newsletter.eml");
+        let html = render(raw, false).unwrap().html.unwrap();
+
+        assert!(html.contains(".col-pdd{padding:24px 32px}"));
+        assert!(html.contains("class=\"col-pdd f-size-22\""));
+        assert!(!html.contains("Shop title"));
+        assert!(html.contains("Zamawiaj taniej"));
+    }
+
+    #[test]
     fn remote_images_show_when_allowed() {
         let rendered = render(MIXED, true).unwrap();
 
