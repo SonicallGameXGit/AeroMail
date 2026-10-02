@@ -1,7 +1,7 @@
 <script lang="ts">
     import { onMount } from 'svelte'
     import { toMailError } from '$lib/api'
-    import type { Account, Api, Attachment, Folder, MailError, MessageContent, MessageSummary, ReplyMode } from '$lib/api'
+    import type { Account, Api, AppSettings, Attachment, Folder, MailError, MessageContent, MessageSummary, ReplyMode } from '$lib/api'
     import Backdrop from '$lib/design/Backdrop.svelte'
     import Button from '$lib/design/Button.svelte'
     import GlassWindow from '$lib/design/GlassWindow.svelte'
@@ -10,6 +10,7 @@
     import Notice from '$lib/design/Notice.svelte'
     import Splitter from '$lib/design/Splitter.svelte'
     import AccountSetup from '$lib/features/accounts/AccountSetup.svelte'
+    import Settings from '$lib/features/settings/Settings.svelte'
     import { t } from '$lib/i18n'
     import AccountMenu from './AccountMenu.svelte'
     import Composer from './Composer.svelte'
@@ -51,11 +52,13 @@
     let error = $state<MailError | null>(null)
 
     let addingAccount = $state(false)
+    let settingsOpen = $state(false)
     // The account whose removal is waiting for confirmation.
     let removing = $state<Account | null>(null)
     let layout = $state<Layout>(loadLayout())
 
-    let picturesOn = $state(true)
+    // What a fresh install does, until the real settings were loaded.
+    let settings = $state<AppSettings>({ senderPictures: true, remoteImages: false })
     let pictures = $state<Pictures>({})
     // Addresses already asked about, so a refreshed list asks nothing twice.
     // Not state on purpose: asking must not make the list ask again.
@@ -138,7 +141,7 @@
     // Pictures are decoration: they arrive when they arrive, and a failure
     // to get one is never shown as an error.
     $effect(() => {
-        if (!picturesOn) {
+        if (!settings.senderPictures) {
             return
         }
 
@@ -152,7 +155,7 @@
 
             api.senderPicture(sender.email)
                 .then((picture) => {
-                    if (picture !== null && picturesOn) {
+                    if (picture !== null && settings.senderPictures) {
                         pictures = { ...pictures, [key]: picture }
                     }
                 })
@@ -162,15 +165,29 @@
         }
     })
 
-    const setPictures = (on: boolean) => guard(async () => {
-        await api.setSenderPicturesEnabled(on)
-        asked = {}
-        pictures = {}
-        picturesOn = on
+    const changeSettings = (next: AppSettings) => guard(async () => {
+        const before = settings
+        // The core first: pictures are asked for as soon as the switch shows on.
+        await api.setSettings(next)
+        if (next.senderPictures !== before.senderPictures) {
+            asked = {}
+            pictures = {}
+        }
+        settings = next
+
+        // The open message is shown the way the new setting says.
+        if (next.remoteImages !== before.remoteImages && selectedId !== null) {
+            const id = selectedId
+            const opened = await api.openMessage(id, false)
+            if (selectedId === id) {
+                content = opened
+                remoteAllowed = false
+            }
+        }
     })
 
     const load = () => guard(async () => {
-        picturesOn = await api.senderPicturesEnabled()
+        settings = await api.settings()
         const list = await api.listAccounts()
         for (const account of list) {
             folders = { ...folders, [account.id]: await api.listFolders(account.id) }
@@ -181,6 +198,7 @@
         const open = list.find((candidate) => candidate.id === accountId) ?? list[0]
         if (open === undefined) {
             accountId = null
+            settingsOpen = false
             return
         }
         if (open.id !== accountId || selectedFolder === null) {
@@ -400,11 +418,9 @@
                         {accounts}
                         {folders}
                         current={account}
-                        {picturesOn}
-                        onpictures={setPictures}
                         onselect={(next) => guard(() => selectAccount(next))}
                         onadd={() => addingAccount = true}
-                        onremove={(next) => removing = next}
+                        onsettings={() => settingsOpen = true}
                     />
                 {/if}
             </header>
@@ -471,7 +487,7 @@
                     <Reader
                         {content}
                         busy={opening}
-                        {remoteAllowed}
+                        remoteAllowed={remoteAllowed || settings.remoteImages}
                         picture={content === null ? null : senderPicture(pictures, content.summary)}
                         toolbar={selected === null ? undefined : actions}
                         onshowremote={showRemote}
@@ -499,6 +515,19 @@
             />
         {/if}
     {/snippet}
+
+    {#if settingsOpen}
+        <Modal title={t('settings.title')}>
+            <Settings
+                {accounts}
+                {settings}
+                onchange={changeSettings}
+                onadd={() => addingAccount = true}
+                onremove={(next) => removing = next}
+                onclose={() => settingsOpen = false}
+            />
+        </Modal>
+    {/if}
 
     {#if addingAccount}
         <Modal title={t('account.add')}>

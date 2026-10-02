@@ -25,5 +25,6 @@ export type IconName =
     | 'reply'
     | 'replyAll'
     | 'sent'
+    | 'settings'
     | 'trash'
     | 'warning'

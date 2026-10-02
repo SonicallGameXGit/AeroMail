@@ -11,7 +11,7 @@
     type Props = {
         content: MessageContent | null
         busy: boolean
-        // True once the user asked to see remote images of this message.
+        // True when remote images may load: asked for this message, or allowed in the settings.
         remoteAllowed: boolean
         // The sender's own picture, when one was found.
         picture: string | null

@@ -6,6 +6,7 @@ import type { DesktopBridge, Reply } from './bridge'
 import type { Account } from './generated/Account'
 import type { AccountSettings } from './generated/AccountSettings'
 import type { AddressError } from './generated/AddressError'
+import type { AppSettings } from './generated/AppSettings'
 import type { Attachment } from './generated/Attachment'
 import type { Detection } from './generated/Detection'
 import type { Draft } from './generated/Draft'
@@ -23,6 +24,7 @@ import type { SettingsIssue } from './generated/SettingsIssue'
 export type { Account } from './generated/Account'
 export type { AccountSettings } from './generated/AccountSettings'
 export type { AddressError } from './generated/AddressError'
+export type { AppSettings } from './generated/AppSettings'
 export type { Attachment } from './generated/Attachment'
 export type { AuthMethod } from './generated/AuthMethod'
 export type { Contact } from './generated/Contact'
@@ -82,8 +84,9 @@ export type Api = {
     // The picture a sender's domain publishes, as an address for an image;
     // null when it has none or when pictures are turned off.
     senderPicture: (email: string) => Promise<string | null>
-    senderPicturesEnabled: () => Promise<boolean>
-    setSenderPicturesEnabled: (enabled: boolean) => Promise<void>
+
+    settings: () => Promise<AppSettings>
+    setSettings: (settings: AppSettings) => Promise<void>
 }
 
 const addressErrors: readonly string[] = [
@@ -207,6 +210,7 @@ export const desktopApi: Api = {
     },
 
     senderPicture: (email) => call<string | null>('sender_picture', { email }),
-    senderPicturesEnabled: () => call<boolean>('sender_pictures_enabled'),
-    setSenderPicturesEnabled: (enabled) => call<void>('set_sender_pictures_enabled', { enabled }),
+
+    settings: () => call<AppSettings>('settings'),
+    setSettings: (settings) => call<void>('set_settings', { settings }),
 }

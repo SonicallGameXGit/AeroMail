@@ -90,7 +90,7 @@ MailClient/
     Cargo.toml                  Cargo workspace (crates/*), shared lints
     .cargo/config.toml          where the generated TypeScript bindings go
     crates/
-        mail-core/              domain types and rules (incl. which sender logos are acceptable); the traits for servers, keychain and logos; MailError
+        mail-core/              domain types and rules (incl. which sender logos are acceptable, and `AppSettings`); the traits for servers, keychain and logos; MailError
         mail-autoconfig/        settings detection: built-in provider table, guess for unknown domains
         mail-protocols/         real IMAP and SMTP behind the core traits (NetConnector); DNS + HTTPS lookup of sender logos (NetLogos)
         mail-store/             SQLite: accounts, folders, cached messages, settings, looked-up sender logos
@@ -107,10 +107,11 @@ MailClient/
         lib/
             api/                the only place that talks to the core (`bridge.ts`: what the shell exposes)
                 generated/      TypeScript types generated from Rust - never edit by hand
-            design/             tokens.css, base.css and the primitives (Button, Icon, Avatar, Menu, Splitter, TextField, GlassWindow, Modal, ...)
+            design/             tokens.css, base.css and the primitives (Button, Icon, Avatar, Menu, Splitter, TextField, CheckField, GlassWindow, Modal, ...)
             i18n/               `t()` and the dictionaries
             features/
                 accounts/       account setup screen, its logic, the fake Api for tests
+                settings/       the settings window: accounts (add, remove) and the app's switches
                 workspace/      account menu, folders, message list, reader with its actions, composer
         routes/
 ```
@@ -142,12 +143,12 @@ Planned, created when first needed (do not add empty crates or folders):
 ### 5.3 Security and privacy
 
 - Credentials and OAuth tokens only in the OS keychain (service `app.mailclient.desktop`, key `account-<id>`). Never in SQLite, logs, config files, error messages or crash reports.
-- Message HTML is untrusted input, with two layers that must both stay: `mail-render` sanitises it (and strips remote images unless allowed), and the UI shows it in an `<iframe sandbox="allow-same-origin">` (never `allow-scripts`) whose own content policy allows only inline styles and images. Remote content is blocked by default with a visible per-message opt-in. Links are caught from outside the frame and opened in the system browser, `http(s)` and `mailto` only.
+- Message HTML is untrusted input, with two layers that must both stay: `mail-render` sanitises it (and strips remote images unless allowed), and the UI shows it in an `<iframe sandbox="allow-same-origin">` (never `allow-scripts`) whose own content policy allows only inline styles and images. Remote content is blocked by default with a visible per-message opt-in; the user can allow remote images for every message in the settings (`AppSettings.remote_images`, off by default, worded with what it gives away), and the core, not the UI, decides what a message is rendered with. Links are caught from outside the frame and opened in the system browser, `http(s)` and `mailto` only.
 - The window runs with `contextIsolation`, `sandbox` and no Node integration; it cannot navigate away or open windows. The page's own policy (`csp` in `vite.config.ts`) allows no remote scripts. The shell opens only `http(s)` and `mailto` links, checked again in the main process.
 - TLS certificates are verified against the bundled Mozilla roots (`webpki-roots`); there is no "accept anyway" path yet.
 - TLS is required by default; plaintext or invalid certificates need an explicit, clearly worded user decision.
 - No telemetry and no network calls to anything but the user's mail providers, the documented autoconfig lookups and the sender-picture lookup below, unless the owner asks for it and the user opts in.
-- **Sender pictures** (BIMI) are on by default and can be turned off in the account menu; turned off, nothing is looked up. For a sender's domain (and up to two parent domains) the core asks DNS for `default._bimi.<domain>` and `_dmarc.<domain>`, then downloads the logo over HTTPS. Nothing about the user or the message is sent, but the logo's host sees the user's IP address. Everything in the record is the sender's and untrusted, so all of these must stay: a logo is used only if the domain's DMARC policy refuses forged mail (`quarantine` / `reject`); only plain `https` to a public host name, default port, no redirects, no proxy; the host's addresses are resolved first, private / local ones are dropped and the download is pinned to the rest; at most 512 KB, SVG only; shown only through `<img>` as a `data:` address (never inlined into the page), where it cannot run scripts or load anything. Answers, including "no logo", are cached per domain for 7 days. The certificate that proves a logo belongs to the brand (VMC) is **not** checked yet, so a look-alike domain with its own DMARC policy can publish someone else's logo: a picture is decoration, never a sign that a message is genuine.
+- **Sender pictures** (BIMI) are on by default and can be turned off in the settings; turned off, nothing is looked up. For a sender's domain (and up to two parent domains) the core asks DNS for `default._bimi.<domain>` and `_dmarc.<domain>`, then downloads the logo over HTTPS. Nothing about the user or the message is sent, but the logo's host sees the user's IP address. Everything in the record is the sender's and untrusted, so all of these must stay: a logo is used only if the domain's DMARC policy refuses forged mail (`quarantine` / `reject`); only plain `https` to a public host name, default port, no redirects, no proxy; the host's addresses are resolved first, private / local ones are dropped and the download is pinned to the rest; at most 512 KB, SVG only; shown only through `<img>` as a `data:` address (never inlined into the page), where it cannot run scripts or load anything. Answers, including "no logo", are cached per domain for 7 days. The certificate that proves a logo belongs to the brand (VMC) is **not** checked yet, so a look-alike domain with its own DMARC policy can publish someone else's logo: a picture is decoration, never a sign that a message is genuine.
 - Never log message bodies or addresses at default log level.
 
 ## 6. Testing
@@ -300,10 +301,11 @@ Each must work on Windows, Linux and macOS, behind one interface (5.2):
 Works today (IMAP + SMTP, password sign-in):
 
 - Account setup: detection, manual form, real sign-in to both servers, password in the keychain; several accounts; removing an account.
-- Workspace layout: account menu at the top right (switch, add, remove); folders of the open account on the left with New message above them; message list; reader with the actions of the open message above it, grouped as answer / put away / mark. Panes are resizable, the folder list down to an icon rail.
+- Workspace layout: account menu at the top right (switch, add, open the settings); folders of the open account on the left with New message above them; message list; reader with the actions of the open message above it, grouped as answer / put away / mark. Panes are resizable, the folder list down to an icon rail.
 - Folders with roles and unread counts; message list (newest 50, "load older"); cached for offline reading; refresh on demand and every 2 minutes for the open folder.
-- Sender pictures: a brand's own logo (BIMI) under the same glass as the initials, cached, with a switch in the account menu.
-- Reading: plain text and sanitised HTML, inline images, remote images on request, attachments saved to disk.
+- Sender pictures: a brand's own logo (BIMI) under the same glass as the initials, cached, with a switch in the settings.
+- Reading: plain text and sanitised HTML, inline images, remote images on request (or always, by a setting), attachments saved to disk.
+- Settings window (opened from the account menu): the accounts with add and remove, sender pictures, always show remote images. Changes apply at once.
 - Read / unread, flag, delete (to Trash, final inside Trash), archive, move to folder.
 - Writing: new message, reply, reply all, forward (plain text), Cc / Bcc, copy saved to Sent.
 
@@ -314,7 +316,7 @@ Not built yet, roughly in this order:
 3. Search, threading, unified inbox, multi-select and bulk actions, undo, drafts, signatures.
 4. Composer: attachments, rich text. Marking the original as answered after a reply.
 5. Native integration: new-mail notifications, sounds, tray, autostart, `mailto:`, `.eml`. IMAP IDLE for push.
-6. Settings screen, keyboard shortcuts, theme switch, bundled font.
+6. More in the settings window (pane widths, refresh interval, sounds, close-to-tray), keyboard shortcuts, theme switch, bundled font.
 7. Online autoconfig lookups (provider autoconfig files, DNS SRV) behind a trait.
 8. Self-signed / private-CA certificates with an explicit user decision.
    Sender pictures: check the logo's certificate (VMC), and the message's own `Authentication-Results`, before showing a logo.
@@ -356,3 +358,6 @@ Newest last. One line per decision: date, decision, reason.
 - 2026-10-02 - Avatars (initials and logos alike) sit under one glass overlay drawn by `Avatar.svelte`. Reason: foreign logos look part of the theme without being altered.
 - 2026-10-02 - The settings table (`settings`, name / value) exists in SQLite from this change; `sender_pictures` is its first entry.
 - 2026-10-02 - The sanitiser keeps `class` and `id`, and the message frame adds only defaults the message's own style sheet overrides (no image size limits). Reason: newsletters are laid out by class rules in their `<style>` block and lost their paddings and font sizes; the frame runs no scripts and holds only the message, so these attributes cannot reach the app.
+- 2026-10-02 - Settings are one value, `AppSettings`, read and written whole (`settings` / `set_settings`), replacing the two sender-picture commands; in SQLite each field stays its own `settings` row holding "on" / "off", a missing row meaning the default. Reason: a new switch is a field, not two more commands, and stored choices keep working.
+- 2026-10-02 - "Always show remote images" exists as a setting, off by default; the per-message opt-in stays for everyone who leaves it off. Reason: owner's request; section 2.2 - the user decides, knowing what it gives away.
+- 2026-10-02 - Removing an account moved from a bare trash icon in the account menu to the settings window, as a labelled button next to each account. Reason: the owner did not find it.

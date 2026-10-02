@@ -24,6 +24,7 @@ use mail_core::mail::{
     Account, Attachment, Contact, Folder, FolderRole, MessageContent, MessageFlags, MessageSummary,
     OutgoingMessage,
 };
+use mail_core::settings::AppSettings;
 use mail_core::transport::{
     Connector, Envelope, Flag, FolderState, IncomingSession, LogoSource, RemoteFolder,
     RemoteMessage, SecretStore,
@@ -38,8 +39,18 @@ pub const PAGE: usize = 50;
 /// How long an answer about a domain's logo is trusted before asking again.
 pub const LOGO_TTL: i64 = 7 * 24 * 60 * 60;
 
-/// The setting that turns sender pictures off. On unless it says "off".
+/// Names of the settings in the store. Each holds "on" or "off"; one that
+/// was never written has its default.
 const SENDER_PICTURES: &str = "sender_pictures";
+const REMOTE_IMAGES: &str = "remote_images";
+
+fn switch(stored: Option<String>, default: bool) -> bool {
+    match stored.as_deref() {
+        Some("on") => true,
+        Some("off") => false,
+        _ => default,
+    }
+}
 
 type Session = Box<dyn IncomingSession>;
 type Slot = Arc<AsyncMutex<Session>>;
@@ -388,6 +399,9 @@ impl Engine {
 
     /// The full message, downloaded on first use and read from the cache
     /// afterwards. Does not mark it as read.
+    ///
+    /// Remote images are kept when asked for this one message
+    /// (`allow_remote`) or when the user's settings allow them everywhere.
     pub async fn open_message(
         &self,
         message_id: i64,
@@ -395,6 +409,7 @@ impl Engine {
     ) -> MailResult<MessageContent> {
         let summary = self.db(|store| store.message(message_id))?;
         let raw = self.raw(&summary).await?;
+        let allow_remote = allow_remote || self.settings()?.remote_images;
         let rendered = render(&raw, allow_remote)?;
 
         Ok(MessageContent {
@@ -632,19 +647,29 @@ impl Engine {
         Ok(())
     }
 
+    // Settings
+
+    pub fn settings(&self) -> MailResult<AppSettings> {
+        let default = AppSettings::default();
+
+        self.db(|store| {
+            Ok(AppSettings {
+                sender_pictures: switch(store.setting(SENDER_PICTURES)?, default.sender_pictures),
+                remote_images: switch(store.setting(REMOTE_IMAGES)?, default.remote_images),
+            })
+        })
+    }
+
+    pub fn set_settings(&self, settings: AppSettings) -> MailResult<()> {
+        let stored = |on: bool| if on { "on" } else { "off" };
+
+        self.db(|store| {
+            store.set_setting(SENDER_PICTURES, stored(settings.sender_pictures))?;
+            store.set_setting(REMOTE_IMAGES, stored(settings.remote_images))
+        })
+    }
+
     // Sender pictures
-
-    pub fn sender_pictures_enabled(&self) -> MailResult<bool> {
-        let setting = self.db(|store| store.setting(SENDER_PICTURES))?;
-
-        Ok(setting.as_deref() != Some("off"))
-    }
-
-    pub fn set_sender_pictures_enabled(&self, enabled: bool) -> MailResult<()> {
-        let value = if enabled { "on" } else { "off" };
-
-        self.db(|store| store.set_setting(SENDER_PICTURES, value))
-    }
 
     fn logo_lookup(&self, domain: &str) -> MailResult<Arc<AsyncMutex<()>>> {
         let mut lookups = self
@@ -662,7 +687,7 @@ impl Engine {
     ///
     /// Turned off means no request leaves the machine for this at all.
     pub async fn sender_picture(&self, email: &str) -> MailResult<Option<String>> {
-        if !self.sender_pictures_enabled()? {
+        if !self.settings()?.sender_pictures {
             return Ok(None);
         }
         let Some(domain) = sender_domain(email) else {

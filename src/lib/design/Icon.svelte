@@ -138,6 +138,13 @@
         <path class="green" d="M9.5 3h5v7H18l-6 6.5L6 10h3.5z" fill={green} />
         <path class="clip-edge" d="M4 17v3h16v-3" />
         <path class="clip" d="M4 17v3h16v-3" />
+    {:else if name === 'settings'}
+        {#each [0, 45, 90, 135, 180, 225, 270, 315] as turn (turn)}
+            <rect class="steel" x="10" y="1.5" width="4" height="5.5" rx="1" fill={steel} transform={`rotate(${turn} 12 12)`} />
+        {/each}
+        <circle class="steel" cx="12" cy="12" r="7" fill={steel} />
+        <path class="shine" d="M6.3 10.5a5.9 5.9 0 0 1 11.4 0 11 11 0 0 0-11.4 0z" />
+        <circle class="steel" cx="12" cy="12" r="2.6" fill={paper} />
     {:else if name === 'warning'}
         <path class="gold" d="M12 3 22 20.5H2z" fill={gold} />
         <path class="mark" d="M12 9.5v5M12 17.4v.2" />

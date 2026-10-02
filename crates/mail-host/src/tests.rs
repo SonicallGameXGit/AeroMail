@@ -162,7 +162,7 @@ async fn a_line_that_is_not_a_request_gets_no_answer() {
 }
 
 #[tokio::test]
-async fn sender_pictures_are_asked_for_and_switched_under_the_names_the_ui_uses() {
+async fn settings_and_sender_pictures_go_under_the_names_the_ui_uses() {
     let engine = engine();
     let ask = || {
         dispatch(
@@ -177,16 +177,16 @@ async fn sender_pictures_are_asked_for_and_switched_under_the_names_the_ui_uses(
         Ok(json!("data:image/svg+xml;base64,PHN2Zz48L3N2Zz4="))
     );
     assert_eq!(
-        dispatch(&engine, "sender_pictures_enabled", Value::Null).await,
-        Ok(json!(true))
+        dispatch(&engine, "settings", Value::Null).await,
+        Ok(json!({ "senderPictures": true, "remoteImages": false }))
     );
 
-    let off = dispatch(
-        &engine,
-        "set_sender_pictures_enabled",
-        json!({ "enabled": false }),
-    )
-    .await;
+    let changed = json!({ "senderPictures": false, "remoteImages": true });
+    let off = dispatch(&engine, "set_settings", json!({ "settings": changed })).await;
     assert_eq!(off, Ok(Value::Null));
+    assert_eq!(
+        dispatch(&engine, "settings", Value::Null).await,
+        Ok(changed)
+    );
     assert_eq!(ask().await, Ok(Value::Null));
 }

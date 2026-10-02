@@ -90,8 +90,15 @@ export const en = {
     'account.removeConfirm': 'Remove {email} from this app? Nothing is deleted on the server.',
     'account.removeYes': 'Remove',
     'account.removeNo': 'Keep',
-    'account.pictures': 'Show sender pictures',
-    'account.picturesHint': 'A company\'s logo is looked up on the internet by the domain of its address. Turned off, nothing is looked up.',
+
+    'settings.title': 'Settings',
+    'settings.accounts': 'Accounts',
+    'settings.privacy': 'Privacy',
+    'settings.pictures': 'Show sender pictures',
+    'settings.picturesHint': 'A company\'s logo is looked up on the internet by the domain of its address. Turned off, nothing is looked up.',
+    'settings.remoteImages': 'Always show remote images',
+    'settings.remoteImagesHint': 'Images are downloaded from the sender\'s server as soon as a message is opened, which tells the sender that you read it, when and from where. Turned off, each message asks first.',
+    'settings.done': 'Done',
 
     'sidebar.folders': 'Folders',
     'sidebar.folderUnread': '{name}, {count} unread',

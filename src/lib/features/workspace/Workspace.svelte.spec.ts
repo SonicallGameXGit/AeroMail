@@ -18,6 +18,11 @@ const folder = (name: string) => page.getByRole('navigation').getByRole('button'
 const pixel = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=='
 const pictureOf = (subject: string) => row(subject).element().querySelector('img')
 const toolbar = () => page.getByRole('toolbar', { name: 'Message actions' })
+const openSettings = async () => {
+    await page.getByRole('button', { name: /^Account: / }).click()
+    await page.getByRole('menuitem', { name: 'Settings' }).click()
+}
+const settings = () => page.getByRole('dialog', { name: 'Settings' })
 
 describe('Workspace', () => {
     it('asks for an account when there is none, then opens the workspace', async () => {
@@ -174,18 +179,35 @@ describe('Workspace', () => {
     it('removes an account only after confirmation', async () => {
         const state = start()
 
-        await page.getByRole('button', { name: 'Account: john@gmail.com' }).click()
-        await page.getByRole('button', { name: 'Remove account: john@gmail.com' }).click()
+        await openSettings()
+        await settings().getByRole('button', { name: 'Remove account: john@gmail.com' }).click()
         await page.getByRole('button', { name: 'Keep' }).click()
-        await expect.element(page.getByRole('dialog')).not.toBeInTheDocument()
+        await expect.element(page.getByRole('dialog', { name: 'Remove account' })).not.toBeInTheDocument()
         expect(state.accounts.length).toBe(1)
 
-        await page.getByRole('button', { name: 'Account: john@gmail.com' }).click()
-        await page.getByRole('button', { name: 'Remove account: john@gmail.com' }).click()
-        await page.getByRole('button', { name: 'Remove', exact: true }).click()
+        await settings().getByRole('button', { name: 'Remove account: john@gmail.com' }).click()
+        await page.getByRole('dialog', { name: 'Remove account' }).getByRole('button', { name: 'Remove', exact: true }).click()
 
         await expect.element(page.getByRole('heading', { name: 'Add your email account' })).toBeInTheDocument()
         expect(state.accounts).toEqual([])
+    })
+
+    it('removes one of several accounts from the settings and keeps the others', async () => {
+        const state = seededState()
+        state.accounts.push({ id: 2, settings: { ...guessDetection.settings } })
+        state.folders.push({ id: 20, accountId: 2, path: 'INBOX', name: 'INBOX', depth: 0, role: 'Inbox', selectable: true, unread: 0, total: 0 })
+        render(Workspace, { api: createFakeApi(state) })
+
+        await openSettings()
+        await settings().getByRole('button', { name: 'Remove account: john@gmail.com' }).click()
+        await page.getByRole('dialog', { name: 'Remove account' }).getByRole('button', { name: 'Remove', exact: true }).click()
+
+        await expect.element(settings().getByRole('button', { name: 'Remove account: john@gmail.com' })).not.toBeInTheDocument()
+        await expect.element(settings().getByRole('button', { name: 'Remove account: me@corp.example' })).toBeInTheDocument()
+        expect(state.accounts.map((account) => account.id)).toEqual([2])
+
+        await page.getByRole('button', { name: 'Done' }).click()
+        await expect.element(page.getByRole('button', { name: 'Account: me@corp.example' })).toBeInTheDocument()
     })
 
     it('flags a message from its row in the list', async () => {
@@ -271,19 +293,70 @@ describe('Workspace', () => {
         render(Workspace, { api: createFakeApi(state) })
         await expect.poll(() => pictureOf('Quarterly report')).not.toBeNull()
 
-        await page.getByRole('button', { name: 'Account: john@gmail.com' }).click()
-        await page.getByRole('menuitemcheckbox', { name: 'Show sender pictures' }).click()
+        await openSettings()
+        await page.getByRole('checkbox', { name: 'Show sender pictures' }).click()
+        await page.getByRole('button', { name: 'Done' }).click()
 
         await expect.poll(() => pictureOf('Quarterly report')).toBeNull()
-        expect(state.picturesEnabled).toBe(false)
+        expect(state.settings.senderPictures).toBe(false)
         const before = state.pictureRequests.length
         await page.getByRole('button', { name: 'Refresh' }).click()
         await expect.element(row('Quarterly report')).toHaveTextContent('B')
         expect(state.pictureRequests.length).toBe(before)
 
-        await page.getByRole('button', { name: 'Account: john@gmail.com' }).click()
-        await page.getByRole('menuitemcheckbox', { name: 'Show sender pictures' }).click()
+        await openSettings()
+        await expect.element(page.getByRole('checkbox', { name: 'Show sender pictures' })).not.toBeChecked()
+        await page.getByRole('checkbox', { name: 'Show sender pictures' }).click()
         await expect.poll(() => pictureOf('Quarterly report')).not.toBeNull()
+    })
+
+    it('asks before showing remote images, unless the settings say always', async () => {
+        const state = seededState()
+        state.remoteMessages = [10, 11]
+        render(Workspace, { api: createFakeApi(state) })
+        const hidden = page.getByText('Remote images are hidden to protect your privacy.')
+        const policy = () => page.getByTitle('Message content').element().getAttribute('srcdoc') ?? ''
+
+        await row('Quarterly report').click()
+        await expect.element(hidden).toBeInTheDocument()
+        expect(policy()).toContain('img-src data:"')
+
+        await page.getByRole('button', { name: 'Show images' }).click()
+        await expect.element(hidden).not.toBeInTheDocument()
+
+        // Asking for one message says nothing about the next one.
+        await row('Lunch on Friday?').click()
+        await expect.element(hidden).toBeInTheDocument()
+
+        await openSettings()
+        await page.getByRole('checkbox', { name: 'Always show remote images' }).click()
+        await page.getByRole('button', { name: 'Done' }).click()
+        await expect.element(hidden).not.toBeInTheDocument()
+        expect(state.settings).toEqual({ senderPictures: true, remoteImages: true })
+        expect(policy()).toContain('img-src data: http: https:"')
+
+        await row('Quarterly report').click()
+        await expect.element(page.getByRole('heading', { name: 'Quarterly report' })).toBeInTheDocument()
+        await expect.element(hidden).not.toBeInTheDocument()
+
+        await openSettings()
+        await page.getByRole('checkbox', { name: 'Always show remote images' }).click()
+        await expect.element(hidden).toBeInTheDocument()
+    })
+
+    it('takes a setting back and says so when it cannot be stored', async () => {
+        const state = start({
+            setSettings: async () => {
+                throw { kind: 'Storage', server: null, detail: 'disk full' }
+            },
+        })
+
+        await openSettings()
+        await page.getByRole('checkbox', { name: 'Always show remote images' }).click()
+
+        await expect.element(page.getByRole('alert')).toHaveTextContent('disk full')
+        await expect.element(page.getByRole('checkbox', { name: 'Always show remote images' })).not.toBeChecked()
+        expect(state.settings.remoteImages).toBe(false)
     })
 
     it('opens links from a message in the system browser, not in the app', async () => {

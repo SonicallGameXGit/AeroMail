@@ -3,7 +3,8 @@ use std::sync::Arc;
 use mail_core::account::ServerRole;
 use mail_core::draft::ReplyMode;
 use mail_core::error::ErrorKind;
-use mail_core::mail::{Account, Folder, FolderRole, OutgoingMessage};
+use mail_core::mail::{Account, Folder, FolderRole, MessageContent, OutgoingMessage};
+use mail_core::settings::AppSettings;
 use mail_core::transport::Flag;
 use mail_store::Store;
 
@@ -341,6 +342,48 @@ async fn opening_a_message_downloads_it_once_and_does_not_mark_it_read() {
             .flags
             .seen
     );
+}
+
+#[tokio::test]
+async fn remote_images_are_blocked_until_asked_for_or_allowed_in_the_settings() {
+    let (world, account) = with_account().await;
+    {
+        let mut remote = world.remote.lock().unwrap();
+        remote.deliver("INBOX", "News", false);
+        remote.folder("INBOX").messages[0].raw = b"From: Ann <ann@example.com>\r\n\
+            Subject: News\r\nContent-Type: text/html; charset=utf-8\r\n\r\n\
+            <p>Hi</p><img src=\"https://tracker.example/pixel.png\">\r\n"
+            .to_vec();
+    }
+    let inbox = folder(&world, &account, FolderRole::Inbox);
+    let id = world.engine.sync_folder(inbox.id, false).await.unwrap()[0].id;
+    let shows_image = |content: &MessageContent| {
+        content
+            .html
+            .as_deref()
+            .is_some_and(|html| html.contains("tracker.example"))
+    };
+
+    let blocked = world.engine.open_message(id, false).await.unwrap();
+    assert!(blocked.remote_content_blocked);
+    assert!(!shows_image(&blocked));
+
+    let asked = world.engine.open_message(id, true).await.unwrap();
+    assert!(!asked.remote_content_blocked);
+    assert!(shows_image(&asked));
+
+    let always = AppSettings {
+        remote_images: true,
+        ..AppSettings::default()
+    };
+    world.engine.set_settings(always).unwrap();
+    let allowed = world.engine.open_message(id, false).await.unwrap();
+    assert!(!allowed.remote_content_blocked);
+    assert!(shows_image(&allowed));
+
+    world.engine.set_settings(AppSettings::default()).unwrap();
+    let again = world.engine.open_message(id, false).await.unwrap();
+    assert!(again.remote_content_blocked);
 }
 
 #[tokio::test]
@@ -719,14 +762,19 @@ async fn something_that_is_not_a_drawing_is_not_shown() {
 async fn turned_off_nothing_is_asked_and_it_can_be_turned_on_again() {
     let world = world();
     world.logos.publish("revolut.com", LOGO);
-    assert_eq!(world.engine.sender_pictures_enabled(), Ok(true));
+    let on = world.engine.settings().unwrap();
+    assert!(on.sender_pictures);
 
-    world.engine.set_sender_pictures_enabled(false).unwrap();
-    assert_eq!(world.engine.sender_pictures_enabled(), Ok(false));
+    let off = AppSettings {
+        sender_pictures: false,
+        ..on
+    };
+    world.engine.set_settings(off).unwrap();
+    assert_eq!(world.engine.settings(), Ok(off));
     assert_eq!(world.engine.sender_picture("a@revolut.com").await, Ok(None));
     assert!(world.logos.asked().is_empty());
 
-    world.engine.set_sender_pictures_enabled(true).unwrap();
+    world.engine.set_settings(on).unwrap();
     let picture = world.engine.sender_picture("a@revolut.com").await;
     assert_eq!(picture.unwrap().as_deref(), Some(PICTURE));
 }

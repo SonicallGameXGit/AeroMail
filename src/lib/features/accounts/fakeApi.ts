@@ -5,6 +5,7 @@ import type {
     Account,
     AccountSettings,
     Api,
+    AppSettings,
     Detection,
     Folder,
     FolderRole,
@@ -84,10 +85,12 @@ export type FakeState = {
     messages: MessageSummary[]
     sent: OutgoingMessage[]
     opened: string[]
-    // Sender pictures by address, and whether they are turned on.
+    // Sender pictures by address.
     pictures: Record<string, string>
-    picturesEnabled: boolean
     pictureRequests: string[]
+    settings: AppSettings
+    // Messages whose content brings remote images.
+    remoteMessages: number[]
 }
 
 const fail = (kind: MailError['kind'], detail: string, server: MailError['server'] = null): MailError => {
@@ -141,8 +144,9 @@ export const seededState = (): FakeState => {
         sent: [],
         opened: [],
         pictures: {},
-        picturesEnabled: true,
         pictureRequests: [],
+        settings: { senderPictures: true, remoteImages: false },
+        remoteMessages: [],
     }
 }
 
@@ -154,8 +158,9 @@ export const emptyState = (): FakeState => {
         sent: [],
         opened: [],
         pictures: {},
-        picturesEnabled: true,
         pictureRequests: [],
+        settings: { senderPictures: true, remoteImages: false },
+        remoteMessages: [],
     }
 }
 
@@ -254,15 +259,17 @@ export const createFakeApi = (state: FakeState = emptyState(), overrides: Partia
 
         listMessages,
         syncFolder: listMessages,
-        openMessage: async (messageId): Promise<MessageContent> => {
+        openMessage: async (messageId, allowRemote): Promise<MessageContent> => {
             const summary = find(state, messageId)
+            const remote = state.remoteMessages.includes(messageId)
+            const blocked = remote && !allowRemote && !state.settings.remoteImages
 
             return {
                 summary,
                 text: `Body of ${summary.subject}`,
-                html: htmlBodies[messageId] ?? null,
+                html: remote ? '<p>Offers</p>' : htmlBodies[messageId] ?? null,
                 attachments: [],
-                remoteContentBlocked: false,
+                remoteContentBlocked: blocked,
                 messageId: `m${messageId}@example.com`,
                 references: [],
                 replyTo: [],
@@ -319,15 +326,16 @@ export const createFakeApi = (state: FakeState = emptyState(), overrides: Partia
 
         senderPicture: async (email) => {
             state.pictureRequests = [...state.pictureRequests, email]
-            if (!state.picturesEnabled) {
+            if (!state.settings.senderPictures) {
                 return null
             }
 
             return state.pictures[email] ?? null
         },
-        senderPicturesEnabled: async () => state.picturesEnabled,
-        setSenderPicturesEnabled: async (enabled) => {
-            state.picturesEnabled = enabled
+
+        settings: async () => state.settings,
+        setSettings: async (settings) => {
+            state.settings = settings
         },
         ...overrides,
     }

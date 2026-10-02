@@ -9,6 +9,7 @@ use mail_core::account::{AccountSettings, Protocol, Security};
 use mail_core::draft::ReplyMode;
 use mail_core::error::{ErrorKind, MailError};
 use mail_core::mail::OutgoingMessage;
+use mail_core::settings::AppSettings;
 use mail_core::transport::Flag;
 use mail_engine::Engine;
 use serde::de::DeserializeOwned;
@@ -119,8 +120,8 @@ struct Save {
 }
 
 #[derive(Deserialize)]
-struct Enabled {
-    enabled: bool,
+struct NewSettings {
+    settings: AppSettings,
 }
 
 fn encode<T: Serialize>(value: &T) -> Value {
@@ -240,10 +241,10 @@ pub async fn dispatch(engine: &Engine, command: &str, params: Value) -> Result<V
             let Email { email } = args(params)?;
             reply(engine.sender_picture(&email).await)
         }
-        "sender_pictures_enabled" => reply(engine.sender_pictures_enabled()),
-        "set_sender_pictures_enabled" => {
-            let Enabled { enabled } = args(params)?;
-            reply(engine.set_sender_pictures_enabled(enabled))
+        "settings" => reply(engine.settings()),
+        "set_settings" => {
+            let NewSettings { settings } = args(params)?;
+            reply(engine.set_settings(settings))
         }
         _ => Err(encode(&MailError::new(
             ErrorKind::Invalid,
