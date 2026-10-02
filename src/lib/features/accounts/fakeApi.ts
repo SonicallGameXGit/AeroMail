@@ -84,6 +84,10 @@ export type FakeState = {
     messages: MessageSummary[]
     sent: OutgoingMessage[]
     opened: string[]
+    // Sender pictures by address, and whether they are turned on.
+    pictures: Record<string, string>
+    picturesEnabled: boolean
+    pictureRequests: string[]
 }
 
 const fail = (kind: MailError['kind'], detail: string, server: MailError['server'] = null): MailError => {
@@ -136,6 +140,9 @@ export const seededState = (): FakeState => {
         ],
         sent: [],
         opened: [],
+        pictures: {},
+        picturesEnabled: true,
+        pictureRequests: [],
     }
 }
 
@@ -146,6 +153,9 @@ export const emptyState = (): FakeState => {
         messages: [],
         sent: [],
         opened: [],
+        pictures: {},
+        picturesEnabled: true,
+        pictureRequests: [],
     }
 }
 
@@ -305,6 +315,19 @@ export const createFakeApi = (state: FakeState = emptyState(), overrides: Partia
         saveAttachment: async () => true,
         openExternal: async (url) => {
             state.opened = [...state.opened, url]
+        },
+
+        senderPicture: async (email) => {
+            state.pictureRequests = [...state.pictureRequests, email]
+            if (!state.picturesEnabled) {
+                return null
+            }
+
+            return state.pictures[email] ?? null
+        },
+        senderPicturesEnabled: async () => state.picturesEnabled,
+        setSenderPicturesEnabled: async (enabled) => {
+            state.picturesEnabled = enabled
         },
         ...overrides,
     }

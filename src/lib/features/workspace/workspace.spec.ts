@@ -11,8 +11,10 @@ import {
     frameDocument,
     groupFolders,
     inboxUnread,
+    pictureKey,
     isSafeLink,
     senderLabel,
+    senderPicture,
     shortDate,
     sizeLabel,
     splitAddresses,
@@ -134,6 +136,15 @@ describe('message labels', () => {
         expect(subjectLabel(message({ subject: '' }))).toBe('(no subject)')
         expect(contactFull({ name: 'Ann', email: 'ann@example.com' })).toBe('Ann <ann@example.com>')
         expect(contactFull({ name: null, email: 'ann@example.com' })).toBe('ann@example.com')
+    })
+
+    it('finds a sender\'s picture whatever the case of the address', () => {
+        const pictures = { [pictureKey(' Ann@Example.com ')]: 'data:image/svg+xml;base64,AAAA' }
+
+        expect(senderPicture(pictures, message({}))).toBe('data:image/svg+xml;base64,AAAA')
+        expect(senderPicture(pictures, message({ from: [{ name: 'Ann', email: 'ANN@example.com' }] }))).not.toBeNull()
+        expect(senderPicture(pictures, message({ from: [{ name: 'Bob', email: 'bob@example.com' }] }))).toBeNull()
+        expect(senderPicture(pictures, message({ from: [] }))).toBeNull()
     })
 
     it('shortens dates by how old they are', () => {

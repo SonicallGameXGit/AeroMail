@@ -78,6 +78,12 @@ export type Api = {
     // Asks where to save; resolves to false when the user cancels.
     saveAttachment: (messageId: number, attachment: Attachment) => Promise<boolean>
     openExternal: (url: string) => Promise<void>
+
+    // The picture a sender's domain publishes, as an address for an image;
+    // null when it has none or when pictures are turned off.
+    senderPicture: (email: string) => Promise<string | null>
+    senderPicturesEnabled: () => Promise<boolean>
+    setSenderPicturesEnabled: (enabled: boolean) => Promise<void>
 }
 
 const addressErrors: readonly string[] = [
@@ -199,4 +205,8 @@ export const desktopApi: Api = {
     openExternal: async (url) => {
         unwrap(await bridge().openExternal(url))
     },
+
+    senderPicture: (email) => call<string | null>('sender_picture', { email }),
+    senderPicturesEnabled: () => call<boolean>('sender_pictures_enabled'),
+    setSenderPicturesEnabled: (enabled) => call<void>('set_sender_pictures_enabled', { enabled }),
 }

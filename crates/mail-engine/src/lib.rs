@@ -13,17 +13,20 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
 use mail_core::account::{AccountSettings, ServerRole, validate};
 use mail_core::address::EmailAddress;
 use mail_core::draft::{Draft, ReplyMode, reply_draft};
 use mail_core::error::{ErrorKind, MailError, MailResult};
+use mail_core::logo::{is_logo, sender_domain};
 use mail_core::mail::{
     Account, Attachment, Contact, Folder, FolderRole, MessageContent, MessageFlags, MessageSummary,
     OutgoingMessage,
 };
 use mail_core::transport::{
-    Connector, Envelope, Flag, FolderState, IncomingSession, RemoteFolder, RemoteMessage,
-    SecretStore,
+    Connector, Envelope, Flag, FolderState, IncomingSession, LogoSource, RemoteFolder,
+    RemoteMessage, SecretStore,
 };
 use mail_render::{ComposeInput, compose, parse_header, render};
 use mail_store::{NewMessage, Store};
@@ -31,6 +34,12 @@ use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
 
 /// How many messages a folder shows at first, and how many "load more" adds.
 pub const PAGE: usize = 50;
+
+/// How long an answer about a domain's logo is trusted before asking again.
+pub const LOGO_TTL: i64 = 7 * 24 * 60 * 60;
+
+/// The setting that turns sender pictures off. On unless it says "off".
+const SENDER_PICTURES: &str = "sender_pictures";
 
 type Session = Box<dyn IncomingSession>;
 type Slot = Arc<AsyncMutex<Session>>;
@@ -92,6 +101,14 @@ pub struct Engine {
     /// One live incoming connection per account, reused between operations.
     sessions: Mutex<HashMap<i64, Slot>>,
     message_counter: AtomicU64,
+    logos: Arc<dyn LogoSource>,
+    /// One lookup per domain at a time: a list full of one sender asks once.
+    logo_lookups: Mutex<HashMap<String, Arc<AsyncMutex<()>>>>,
+}
+
+/// A drawing as an address an `<img>` can show without any request.
+fn picture(svg: Vec<u8>) -> String {
+    format!("data:image/svg+xml;base64,{}", STANDARD.encode(svg))
 }
 
 fn secret_key(account_id: i64) -> String {
@@ -141,13 +158,20 @@ fn to_new_message(remote: &RemoteMessage) -> NewMessage {
 }
 
 impl Engine {
-    pub fn new(store: Store, connector: Arc<dyn Connector>, secrets: Arc<dyn SecretStore>) -> Self {
+    pub fn new(
+        store: Store,
+        connector: Arc<dyn Connector>,
+        secrets: Arc<dyn SecretStore>,
+        logos: Arc<dyn LogoSource>,
+    ) -> Self {
         Self {
             store: Mutex::new(store),
             connector,
             secrets,
             sessions: Mutex::new(HashMap::new()),
             message_counter: AtomicU64::new(0),
+            logos,
+            logo_lookups: Mutex::new(HashMap::new()),
         }
     }
 
@@ -606,5 +630,66 @@ impl Engine {
         }
 
         Ok(())
+    }
+
+    // Sender pictures
+
+    pub fn sender_pictures_enabled(&self) -> MailResult<bool> {
+        let setting = self.db(|store| store.setting(SENDER_PICTURES))?;
+
+        Ok(setting.as_deref() != Some("off"))
+    }
+
+    pub fn set_sender_pictures_enabled(&self, enabled: bool) -> MailResult<()> {
+        let value = if enabled { "on" } else { "off" };
+
+        self.db(|store| store.set_setting(SENDER_PICTURES, value))
+    }
+
+    fn logo_lookup(&self, domain: &str) -> MailResult<Arc<AsyncMutex<()>>> {
+        let mut lookups = self
+            .logo_lookups
+            .lock()
+            .map_err(|_| MailError::new(ErrorKind::Connect, "the lookup table is unusable"))?;
+
+        Ok(Arc::clone(lookups.entry(domain.to_string()).or_default()))
+    }
+
+    /// The picture the sender's domain publishes for its mail, ready for an
+    /// `<img>`. `None` when it has none, when pictures are turned off, or
+    /// when it cannot be found out right now: a missing picture is never an
+    /// error worth showing.
+    ///
+    /// Turned off means no request leaves the machine for this at all.
+    pub async fn sender_picture(&self, email: &str) -> MailResult<Option<String>> {
+        if !self.sender_pictures_enabled()? {
+            return Ok(None);
+        }
+        let Some(domain) = sender_domain(email) else {
+            return Ok(None);
+        };
+
+        let lookup = self.logo_lookup(&domain)?;
+        let _one_at_a_time = lookup.lock().await;
+
+        let (now, _) = unix_now();
+        let cached = self.db(|store| store.logo(&domain))?;
+        if let Some(cached) = &cached
+            && now - cached.checked < LOGO_TTL
+        {
+            return Ok(cached.svg.clone().map(picture));
+        }
+
+        match self.logos.logo(&domain).await {
+            Ok(found) => {
+                let logo = found.filter(|bytes| is_logo(bytes));
+                self.db(|store| store.put_logo(&domain, logo.as_deref(), now))?;
+
+                Ok(logo.map(picture))
+            }
+            // Offline or a broken resolver: the old answer still serves, and
+            // nothing is stored, so the domain is asked again next time.
+            Err(_) => Ok(cached.and_then(|cached| cached.svg).map(picture)),
+        }
     }
 }

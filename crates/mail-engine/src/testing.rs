@@ -10,8 +10,8 @@ use mail_core::account::{
 use mail_core::error::{ErrorKind, MailError, MailResult};
 use mail_core::mail::{FolderRole, MessageFlags};
 use mail_core::transport::{
-    Connector, Envelope, Flag, FolderState, IncomingSession, RemoteFolder, RemoteMessage,
-    SecretStore,
+    Connector, Envelope, Flag, FolderState, IncomingSession, LogoSource, RemoteFolder,
+    RemoteMessage, SecretStore,
 };
 
 pub const PASSWORD: &str = "secret";
@@ -398,6 +398,42 @@ impl SecretStore for FakeSecrets {
         self.values.lock().unwrap().remove(key);
 
         Ok(())
+    }
+}
+
+pub const LOGO: &[u8] = b"<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>";
+
+/// The internet as far as logos go: which domains publish one, and a record
+/// of every question asked.
+#[derive(Default)]
+pub struct FakeLogos {
+    pub published: Mutex<HashMap<String, Vec<u8>>>,
+    pub asked: Mutex<Vec<String>>,
+    pub offline: Mutex<bool>,
+}
+
+impl FakeLogos {
+    pub fn publish(&self, domain: &str, bytes: &[u8]) {
+        self.published
+            .lock()
+            .unwrap()
+            .insert(domain.to_string(), bytes.to_vec());
+    }
+
+    pub fn asked(&self) -> Vec<String> {
+        self.asked.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl LogoSource for FakeLogos {
+    async fn logo(&self, domain: &str) -> MailResult<Option<Vec<u8>>> {
+        self.asked.lock().unwrap().push(domain.to_string());
+        if *self.offline.lock().unwrap() {
+            return Err(MailError::new(ErrorKind::Connect, "no network"));
+        }
+
+        Ok(self.published.lock().unwrap().get(domain).cloned())
     }
 }
 

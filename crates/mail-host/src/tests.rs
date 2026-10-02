@@ -3,7 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use mail_core::account::{ServerRole, ServerSettings};
 use mail_core::error::{ErrorKind, MailError, MailResult};
-use mail_core::transport::{Connector, Envelope, IncomingSession, SecretStore};
+use mail_core::transport::{Connector, Envelope, IncomingSession, LogoSource, SecretStore};
 use mail_engine::Engine;
 use mail_store::Store;
 use serde_json::{Value, json};
@@ -52,11 +52,22 @@ impl SecretStore for NoSecrets {
     }
 }
 
+/// Every domain publishes the same tiny drawing.
+struct OneLogo;
+
+#[async_trait]
+impl LogoSource for OneLogo {
+    async fn logo(&self, _: &str) -> MailResult<Option<Vec<u8>>> {
+        Ok(Some(b"<svg></svg>".to_vec()))
+    }
+}
+
 fn engine() -> Engine {
     Engine::new(
         Store::open_in_memory().unwrap(),
         Arc::new(Offline),
         Arc::new(NoSecrets),
+        Arc::new(OneLogo),
     )
 }
 
@@ -148,4 +159,34 @@ async fn a_line_is_answered_under_its_own_id() {
 #[tokio::test]
 async fn a_line_that_is_not_a_request_gets_no_answer() {
     assert_eq!(handle_line(&engine(), "hello").await, None);
+}
+
+#[tokio::test]
+async fn sender_pictures_are_asked_for_and_switched_under_the_names_the_ui_uses() {
+    let engine = engine();
+    let ask = || {
+        dispatch(
+            &engine,
+            "sender_picture",
+            json!({ "email": "a@example.com" }),
+        )
+    };
+
+    assert_eq!(
+        ask().await,
+        Ok(json!("data:image/svg+xml;base64,PHN2Zz48L3N2Zz4="))
+    );
+    assert_eq!(
+        dispatch(&engine, "sender_pictures_enabled", Value::Null).await,
+        Ok(json!(true))
+    );
+
+    let off = dispatch(
+        &engine,
+        "set_sender_pictures_enabled",
+        json!({ "enabled": false }),
+    )
+    .await;
+    assert_eq!(off, Ok(Value::Null));
+    assert_eq!(ask().await, Ok(Value::Null));
 }

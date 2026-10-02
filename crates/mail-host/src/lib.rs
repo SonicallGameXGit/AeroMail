@@ -118,6 +118,11 @@ struct Save {
     path: String,
 }
 
+#[derive(Deserialize)]
+struct Enabled {
+    enabled: bool,
+}
+
 fn encode<T: Serialize>(value: &T) -> Value {
     serde_json::to_value(value).unwrap_or_else(
         |error| json!({ "kind": "Protocol", "server": null, "detail": error.to_string() }),
@@ -230,6 +235,15 @@ pub async fn dispatch(engine: &Engine, command: &str, params: Value) -> Result<V
                 Err(error) => Err(error),
             };
             reply(saved)
+        }
+        "sender_picture" => {
+            let Email { email } = args(params)?;
+            reply(engine.sender_picture(&email).await)
+        }
+        "sender_pictures_enabled" => reply(engine.sender_pictures_enabled()),
+        "set_sender_pictures_enabled" => {
+            let Enabled { enabled } = args(params)?;
+            reply(engine.set_sender_pictures_enabled(enabled))
         }
         _ => Err(encode(&MailError::new(
             ErrorKind::Invalid,

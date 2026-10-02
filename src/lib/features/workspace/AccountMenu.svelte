@@ -13,12 +13,15 @@
         folders: Record<number, Folder[]>
         // The account whose mail is open.
         current: Account
+        // Whether sender pictures are looked up.
+        picturesOn: boolean
         onselect: (account: Account) => void
         onadd: () => void
         onremove: (account: Account) => void
+        onpictures: (on: boolean) => void
     }
 
-    let { accounts, folders, current, onselect, onadd, onremove }: Props = $props()
+    let { accounts, folders, current, picturesOn, onselect, onadd, onremove, onpictures }: Props = $props()
 </script>
 
 <Menu
@@ -80,6 +83,17 @@
                 onadd()
             }}
         >{t('account.add')}</MenuItem>
+
+        <hr />
+
+        <MenuItem
+            checked={picturesOn}
+            hint={t('account.picturesHint')}
+            onclick={() => {
+                close()
+                onpictures(!picturesOn)
+            }}
+        >{t('account.pictures')}</MenuItem>
     {/snippet}
 </Menu>
 

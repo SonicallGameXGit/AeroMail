@@ -1,4 +1,5 @@
-//! SQLite storage: accounts, folders and the local cache of messages.
+//! SQLite storage: accounts, folders, the local cache of messages, settings
+//! and the sender pictures that were looked up.
 //!
 //! Secrets never come here; they live in the OS keychain.
 
@@ -49,6 +50,29 @@ const SCHEMA: &str = "
         UNIQUE (folder_id, uid)
     );
 ";
+
+// Added later; a database made before them gets them on its next start.
+const SCHEMA_2: &str = "
+    CREATE TABLE settings (
+        name TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    );
+
+    CREATE TABLE logos (
+        domain TEXT PRIMARY KEY,
+        svg BLOB,
+        checked INTEGER NOT NULL
+    );
+";
+
+/// What was found out about a sender domain's logo, and when.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CachedLogo {
+    /// `None` when the domain was asked and has no logo.
+    pub svg: Option<Vec<u8>>,
+    /// Unix time in seconds of the lookup.
+    pub checked: i64,
+}
 
 /// A message as it arrives from the server, before it has a local id.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -146,8 +170,11 @@ impl Store {
             .map_err(storage)?;
         if version == 0 {
             connection.execute_batch(SCHEMA).map_err(storage)?;
+        }
+        if version < 2 {
+            connection.execute_batch(SCHEMA_2).map_err(storage)?;
             connection
-                .pragma_update(None, "user_version", 1)
+                .pragma_update(None, "user_version", 2)
                 .map_err(storage)?;
         }
 
@@ -459,6 +486,62 @@ impl Store {
 
         Ok(())
     }
+
+    // Settings
+
+    pub fn setting(&self, name: &str) -> MailResult<Option<String>> {
+        self.connection
+            .query_row(
+                "SELECT value FROM settings WHERE name = ?1",
+                params![name],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(storage)
+    }
+
+    pub fn set_setting(&self, name: &str, value: &str) -> MailResult<()> {
+        self.connection
+            .execute(
+                "INSERT INTO settings (name, value) VALUES (?1, ?2)
+                 ON CONFLICT (name) DO UPDATE SET value = excluded.value",
+                params![name, value],
+            )
+            .map_err(storage)?;
+
+        Ok(())
+    }
+
+    // Sender pictures
+
+    pub fn logo(&self, domain: &str) -> MailResult<Option<CachedLogo>> {
+        self.connection
+            .query_row(
+                "SELECT svg, checked FROM logos WHERE domain = ?1",
+                params![domain],
+                |row| {
+                    Ok(CachedLogo {
+                        svg: row.get(0)?,
+                        checked: row.get(1)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(storage)
+    }
+
+    /// Remembers the answer for a domain, replacing an older one.
+    pub fn put_logo(&self, domain: &str, svg: Option<&[u8]>, checked: i64) -> MailResult<()> {
+        self.connection
+            .execute(
+                "INSERT INTO logos (domain, svg, checked) VALUES (?1, ?2, ?3)
+                 ON CONFLICT (domain) DO UPDATE SET svg = excluded.svg, checked = excluded.checked",
+                params![domain, svg, checked],
+            )
+            .map_err(storage)?;
+
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -621,5 +704,63 @@ mod tests {
             ErrorKind::NotFound
         );
         assert_eq!(store.message(id).unwrap_err().kind, ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn settings_are_kept_and_replaced() {
+        let store = Store::open_in_memory().unwrap();
+        assert_eq!(store.setting("sender_pictures").unwrap(), None);
+
+        store.set_setting("sender_pictures", "off").unwrap();
+        store.set_setting("sender_pictures", "on").unwrap();
+        assert_eq!(
+            store.setting("sender_pictures").unwrap().as_deref(),
+            Some("on")
+        );
+    }
+
+    #[test]
+    fn a_logo_answer_is_kept_per_domain_including_no_logo() {
+        let store = Store::open_in_memory().unwrap();
+        assert_eq!(store.logo("revolut.com").unwrap(), None);
+
+        store.put_logo("revolut.com", Some(b"<svg/>"), 10).unwrap();
+        store.put_logo("example.com", None, 20).unwrap();
+        assert_eq!(
+            store.logo("revolut.com").unwrap(),
+            Some(CachedLogo {
+                svg: Some(b"<svg/>".to_vec()),
+                checked: 10
+            })
+        );
+        assert_eq!(
+            store.logo("example.com").unwrap(),
+            Some(CachedLogo {
+                svg: None,
+                checked: 20
+            })
+        );
+
+        store.put_logo("revolut.com", None, 30).unwrap();
+        assert_eq!(store.logo("revolut.com").unwrap().unwrap().svg, None);
+    }
+
+    #[test]
+    fn a_database_from_before_settings_and_logos_gains_them() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(SCHEMA).unwrap();
+        connection.pragma_update(None, "user_version", 1).unwrap();
+        connection
+            .execute(
+                "INSERT INTO accounts (settings) VALUES (?1)",
+                params![serde_json::to_string(&settings()).unwrap()],
+            )
+            .unwrap();
+
+        let store = Store::prepare(connection).unwrap();
+
+        assert_eq!(store.accounts().unwrap().len(), 1);
+        store.set_setting("sender_pictures", "off").unwrap();
+        store.put_logo("example.com", None, 1).unwrap();
     }
 }

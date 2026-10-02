@@ -14,6 +14,9 @@ const start = (overrides: Parameters<typeof createFakeApi>[1] = {}) => {
 
 const row = (subject: string) => page.getByRole('button', { name: subject })
 const folder = (name: string) => page.getByRole('navigation').getByRole('button', { name })
+// A one-pixel picture that really loads.
+const pixel = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=='
+const pictureOf = (subject: string) => row(subject).element().querySelector('img')
 const toolbar = () => page.getByRole('toolbar', { name: 'Message actions' })
 
 describe('Workspace', () => {
@@ -244,6 +247,43 @@ describe('Workspace', () => {
         await expect.element(edge).toHaveAttribute('aria-valuenow', '52')
         await expect.element(folder('Trash')).toBeInTheDocument()
         localStorage.clear()
+    })
+
+    it('shows a sender\'s own picture, and the initial for a sender without one', async () => {
+        const state = seededState()
+        state.pictures = { 'bob@example.com': pixel }
+        render(Workspace, { api: createFakeApi(state) })
+
+        await expect.poll(() => pictureOf('Quarterly report')?.getAttribute('src')).toBe(pixel)
+        expect(pictureOf('Lunch on Friday?')).toBeNull()
+        await expect.element(row('Lunch on Friday?')).toHaveTextContent('A')
+
+        // The same sender is not asked about again when the list is refreshed.
+        await page.getByRole('button', { name: 'Refresh' }).click()
+        await row('Quarterly report').click()
+        await expect.element(page.getByRole('heading', { name: 'Quarterly report' })).toBeInTheDocument()
+        expect(state.pictureRequests.toSorted()).toEqual(['ann@example.com', 'bob@example.com'])
+    })
+
+    it('stops showing and asking for sender pictures when they are turned off', async () => {
+        const state = seededState()
+        state.pictures = { 'bob@example.com': pixel }
+        render(Workspace, { api: createFakeApi(state) })
+        await expect.poll(() => pictureOf('Quarterly report')).not.toBeNull()
+
+        await page.getByRole('button', { name: 'Account: john@gmail.com' }).click()
+        await page.getByRole('menuitemcheckbox', { name: 'Show sender pictures' }).click()
+
+        await expect.poll(() => pictureOf('Quarterly report')).toBeNull()
+        expect(state.picturesEnabled).toBe(false)
+        const before = state.pictureRequests.length
+        await page.getByRole('button', { name: 'Refresh' }).click()
+        await expect.element(row('Quarterly report')).toHaveTextContent('B')
+        expect(state.pictureRequests.length).toBe(before)
+
+        await page.getByRole('button', { name: 'Account: john@gmail.com' }).click()
+        await page.getByRole('menuitemcheckbox', { name: 'Show sender pictures' }).click()
+        await expect.poll(() => pictureOf('Quarterly report')).not.toBeNull()
     })
 
     it('opens links from a message in the system browser, not in the app', async () => {

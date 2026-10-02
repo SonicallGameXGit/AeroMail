@@ -90,6 +90,8 @@ export const en = {
     'account.removeConfirm': 'Remove {email} from this app? Nothing is deleted on the server.',
     'account.removeYes': 'Remove',
     'account.removeNo': 'Keep',
+    'account.pictures': 'Show sender pictures',
+    'account.picturesHint': 'A company\'s logo is looked up on the internet by the domain of its address. Turned off, nothing is looked up.',
 
     'sidebar.folders': 'Folders',
     'sidebar.folderUnread': '{name}, {count} unread',

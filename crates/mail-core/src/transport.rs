@@ -105,3 +105,13 @@ pub trait SecretStore: Send + Sync {
     fn set(&self, key: &str, secret: &str) -> MailResult<()>;
     fn delete(&self, key: &str) -> MailResult<()>;
 }
+
+/// Where sender pictures come from. The real one asks DNS and downloads
+/// (`mail-protocols`); the rules are in `crate::logo`.
+#[async_trait]
+pub trait LogoSource: Send + Sync {
+    /// The logo the domain publishes for its mail, as the bytes of an SVG
+    /// drawing. `Ok(None)` is a definite "this domain has none"; an error
+    /// means it could not be found out and is worth asking again.
+    async fn logo(&self, domain: &str) -> MailResult<Option<Vec<u8>>>;
+}

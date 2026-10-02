@@ -52,7 +52,7 @@
             return []
         }
 
-        return Array.from(panel.querySelectorAll('[role="menuitem"]'))
+        return Array.from(panel.querySelectorAll('[role^="menuitem"]'))
             .filter((item): item is HTMLElement => item instanceof HTMLElement)
     }
 

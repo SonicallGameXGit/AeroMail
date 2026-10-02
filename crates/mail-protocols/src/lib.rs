@@ -1,7 +1,8 @@
 //! Real network implementations of the core transport traits: IMAP for
-//! incoming mail, SMTP for outgoing.
+//! incoming mail, SMTP for outgoing, DNS and HTTPS for sender pictures.
 
 mod imap;
+mod logos;
 mod smtp;
 mod tls;
 
@@ -12,6 +13,8 @@ use async_trait::async_trait;
 use mail_core::account::{AuthMethod, Protocol, ServerRole, ServerSettings};
 use mail_core::error::{ErrorKind, MailError, MailResult};
 use mail_core::transport::{Connector, Envelope, IncomingSession};
+
+pub use logos::NetLogos;
 
 /// Connects to real servers over the network.
 #[derive(Default)]

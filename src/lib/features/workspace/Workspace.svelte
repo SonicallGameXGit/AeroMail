@@ -28,7 +28,7 @@
     import MessageList from './MessageList.svelte'
     import Reader from './Reader.svelte'
     import Sidebar from './Sidebar.svelte'
-    import { emptyForm, errorMessage, formFromDraft, groupFolders, toOutgoing, type ComposeForm } from './workspace'
+    import { emptyForm, errorMessage, formFromDraft, groupFolders, pictureKey, senderPicture, toOutgoing, type ComposeForm, type Pictures } from './workspace'
 
     let { api }: { api: Api } = $props()
 
@@ -54,6 +54,12 @@
     // The account whose removal is waiting for confirmation.
     let removing = $state<Account | null>(null)
     let layout = $state<Layout>(loadLayout())
+
+    let picturesOn = $state(true)
+    let pictures = $state<Pictures>({})
+    // Addresses already asked about, so a refreshed list asks nothing twice.
+    // Not state on purpose: asking must not make the list ask again.
+    let asked: Record<string, true> = {}
     let form = $state<ComposeForm | null>(null)
     let sending = $state(false)
     let sendError = $state<MailError | null>(null)
@@ -129,7 +135,42 @@
         }
     }
 
+    // Pictures are decoration: they arrive when they arrive, and a failure
+    // to get one is never shown as an error.
+    $effect(() => {
+        if (!picturesOn) {
+            return
+        }
+
+        for (const message of messages) {
+            const sender = message.from[0]
+            if (sender === undefined || asked[pictureKey(sender.email)] === true) {
+                continue
+            }
+            const key = pictureKey(sender.email)
+            asked[key] = true
+
+            api.senderPicture(sender.email)
+                .then((picture) => {
+                    if (picture !== null && picturesOn) {
+                        pictures = { ...pictures, [key]: picture }
+                    }
+                })
+                .catch(() => {
+                    delete asked[key]
+                })
+        }
+    })
+
+    const setPictures = (on: boolean) => guard(async () => {
+        await api.setSenderPicturesEnabled(on)
+        asked = {}
+        pictures = {}
+        picturesOn = on
+    })
+
     const load = () => guard(async () => {
+        picturesOn = await api.senderPicturesEnabled()
         const list = await api.listAccounts()
         for (const account of list) {
             folders = { ...folders, [account.id]: await api.listFolders(account.id) }
@@ -359,6 +400,8 @@
                         {accounts}
                         {folders}
                         current={account}
+                        {picturesOn}
+                        onpictures={setPictures}
                         onselect={(next) => guard(() => selectAccount(next))}
                         onadd={() => addingAccount = true}
                         onremove={(next) => removing = next}
@@ -403,6 +446,7 @@
                         folder={selectedFolder}
                         {messages}
                         {selectedId}
+                        {pictures}
                         {hasMore}
                         busy={syncing}
                         onselect={openMessage}
@@ -428,6 +472,7 @@
                         {content}
                         busy={opening}
                         {remoteAllowed}
+                        picture={content === null ? null : senderPicture(pictures, content.summary)}
                         toolbar={selected === null ? undefined : actions}
                         onshowremote={showRemote}
                         onsave={saveAttachment}

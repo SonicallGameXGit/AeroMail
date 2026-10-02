@@ -29,18 +29,24 @@ fn tls_error(detail: impl ToString) -> MailError {
     MailError::new(ErrorKind::Tls, detail.to_string())
 }
 
-/// Upgrades a connection to TLS, verifying the certificate against the
-/// bundled Mozilla root certificates.
-pub(crate) async fn wrap(stream: TcpStream, host: &str) -> MailResult<TlsStream<TcpStream>> {
+/// How every encrypted connection of the app is set up: certificates are
+/// verified against the bundled Mozilla root certificates.
+pub(crate) fn client_config() -> MailResult<ClientConfig> {
     let mut roots = RootCertStore::empty();
     roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
 
     let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let config = ClientConfig::builder_with_provider(provider)
+
+    Ok(ClientConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()
         .map_err(tls_error)?
         .with_root_certificates(roots)
-        .with_no_client_auth();
+        .with_no_client_auth())
+}
+
+/// Upgrades a connection to TLS.
+pub(crate) async fn wrap(stream: TcpStream, host: &str) -> MailResult<TlsStream<TcpStream>> {
+    let config = client_config()?;
 
     let name = ServerName::try_from(host.to_string()).map_err(tls_error)?;
     let connecting = TlsConnector::from(Arc::new(config)).connect(name, stream);

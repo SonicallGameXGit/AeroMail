@@ -4,13 +4,14 @@
     import Button from '$lib/design/Button.svelte'
     import Icon from '$lib/design/Icon.svelte'
     import { t } from '$lib/i18n'
-    import { folderIcon, folderLabel, senderLabel, shortDate, subjectLabel } from './workspace'
+    import { folderIcon, folderLabel, senderLabel, senderPicture, shortDate, subjectLabel, type Pictures } from './workspace'
 
     type Props = {
         // The folder whose messages are listed.
         folder: Folder | null
         messages: MessageSummary[]
         selectedId: number | null
+        pictures: Pictures
         // True when the server has older messages than the ones shown.
         hasMore: boolean
         busy: boolean
@@ -20,7 +21,7 @@
         onrefresh: () => void
     }
 
-    let { folder, messages, selectedId, hasMore, busy, onselect, onflag, onmore, onrefresh }: Props = $props()
+    let { folder, messages, selectedId, pictures, hasMore, busy, onselect, onflag, onmore, onrefresh }: Props = $props()
 
     const now = new Date()
 </script>
@@ -69,7 +70,11 @@
                                     <span class="dot" role="img" aria-label={t('list.unread')}></span>
                                 {/if}
                             </span>
-                            <Avatar name={senderLabel(message)} seed={message.from[0]?.email ?? ''} />
+                            <Avatar
+                                name={senderLabel(message)}
+                                seed={message.from[0]?.email ?? ''}
+                                image={senderPicture(pictures, message)}
+                            />
                             <span class="lines">
                                 <span class="top">
                                     <span class="sender">{senderLabel(message)}</span>

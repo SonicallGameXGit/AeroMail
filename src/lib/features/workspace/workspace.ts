@@ -109,6 +109,23 @@ export const contactFull = (contact: Contact): string => {
     return `${contact.name} <${contact.email}>`
 }
 
+// Sender pictures that were looked up, by `pictureKey`.
+export type Pictures = Record<string, string>
+
+// Addresses differ only by case for the same sender.
+export const pictureKey = (email: string): string => {
+    return email.trim().toLowerCase()
+}
+
+export const senderPicture = (pictures: Pictures, message: MessageSummary): string | null => {
+    const first = message.from[0]
+    if (first === undefined) {
+        return null
+    }
+
+    return pictures[pictureKey(first.email)] ?? null
+}
+
 export const senderLabel = (message: MessageSummary): string => {
     const first = message.from[0]
     if (first === undefined) {

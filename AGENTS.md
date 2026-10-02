@@ -60,7 +60,7 @@ Baseline every mail client must have - all of it is in scope:
 - Offline access to synced mail, background sync, new-mail notifications with sound, tray icon with unread state.
 - Settings, keyboard shortcuts, themes.
 
-Smart, optional layer (examples; each must follow 2.2): provider autoconfiguration, and further ideas to be agreed with the owner before being built.
+Smart, optional layer (examples; each must follow 2.2): provider autoconfiguration, sender pictures (a brand's own logo next to its mail; a coloured initial is the manual equivalent and the fallback), and further ideas to be agreed with the owner before being built.
 
 Do not invent large features on your own. Propose them.
 
@@ -90,10 +90,10 @@ MailClient/
     Cargo.toml                  Cargo workspace (crates/*), shared lints
     .cargo/config.toml          where the generated TypeScript bindings go
     crates/
-        mail-core/              domain types and rules; the traits for servers and keychain; MailError
+        mail-core/              domain types and rules (incl. which sender logos are acceptable); the traits for servers, keychain and logos; MailError
         mail-autoconfig/        settings detection: built-in provider table, guess for unknown domains
-        mail-protocols/         real IMAP and SMTP behind the core traits (NetConnector)
-        mail-store/             SQLite: accounts, folders, cached messages
+        mail-protocols/         real IMAP and SMTP behind the core traits (NetConnector); DNS + HTTPS lookup of sender logos (NetLogos)
+        mail-store/             SQLite: accounts, folders, cached messages, settings, looked-up sender logos
         mail-render/            header parsing, HTML sanitising, attachments, composing raw messages
         mail-engine/            the operations the UI calls; owns the store, uses the traits
         mail-host/              the engine as a process (`mailclient-core`): commands as JSON, keychain
@@ -113,7 +113,7 @@ MailClient/
         routes/
 ```
 
-Dependency direction: `mail-core` <- everything; `mail-engine` uses `mail-store` and `mail-render` directly and reaches servers and the keychain only through the traits in `mail-core::transport`; only `mail-host` knows `mail-protocols` and the keychain library.
+Dependency direction: `mail-core` <- everything; `mail-engine` uses `mail-store` and `mail-render` directly and reaches servers and the keychain only through the traits in `mail-core::transport`; only `mail-host` knows `mail-protocols` and the keychain library. Schema changes are added as a new step in `Store::prepare` (`user_version`), never by editing an older step: existing databases must keep opening.
 
 Planned, created when first needed (do not add empty crates or folders):
 
@@ -128,7 +128,7 @@ Planned, created when first needed (do not add empty crates or folders):
 - **The shell is thin.** `electron/` opens the window, runs the core and wires native features. No business logic, and nothing in TypeScript that could live in Rust.
 - **One way from the UI to the core.** The page calls `window.mailclient` (exposed by `electron/preload.cts`), the main process passes the command to `mailclient-core` as one JSON line on its stdin and returns the answer line: `{ id, ok, value }` or `{ id, ok, error }`. No local port is opened. A new operation is a new arm in `mail-host::dispatch` plus a method in `src/lib/api`.
 - **The UI talks to the core through `src/lib/api` only.** Components never touch `window.mailclient` directly. This is what keeps a web build cheap.
-- **I/O behind traits.** Mail servers and the keychain are traits in `mail-core::transport`, with real and fake implementations, so the engine is testable without a network. Storage is not behind a trait: it is always SQLite, and tests use it in memory.
+- **I/O behind traits.** Mail servers, the keychain and the sender-logo lookup are traits in `mail-core::transport`, with real and fake implementations, so the engine is testable without a network. Storage is not behind a trait: it is always SQLite, and tests use it in memory.
 - **One error type crosses boundaries**: `MailError { kind, server, detail }`. The UI words the message from `kind` and `server`; `detail` is the technical line. Add an `ErrorKind` rather than encoding meaning in `detail`.
 - **Database ids are never reused** (`AUTOINCREMENT`): the UI and the keychain hold ids.
 - **Types cross the boundary once.** Rust types that reach the UI derive `ts_rs::TS` with `#[ts(export)]`; `cargo test` writes them to `src/lib/api/generated`. Commit the generated files, never edit them, and re-export them from `src/lib/api/index.ts`.
@@ -144,7 +144,8 @@ Planned, created when first needed (do not add empty crates or folders):
 - The window runs with `contextIsolation`, `sandbox` and no Node integration; it cannot navigate away or open windows. The page's own policy (`csp` in `vite.config.ts`) allows no remote scripts. The shell opens only `http(s)` and `mailto` links, checked again in the main process.
 - TLS certificates are verified against the bundled Mozilla roots (`webpki-roots`); there is no "accept anyway" path yet.
 - TLS is required by default; plaintext or invalid certificates need an explicit, clearly worded user decision.
-- No telemetry and no network calls to anything but the user's mail providers and the documented autoconfig lookups, unless the owner asks for it and the user opts in.
+- No telemetry and no network calls to anything but the user's mail providers, the documented autoconfig lookups and the sender-picture lookup below, unless the owner asks for it and the user opts in.
+- **Sender pictures** (BIMI) are on by default and can be turned off in the account menu; turned off, nothing is looked up. For a sender's domain (and up to two parent domains) the core asks DNS for `default._bimi.<domain>` and `_dmarc.<domain>`, then downloads the logo over HTTPS. Nothing about the user or the message is sent, but the logo's host sees the user's IP address. Everything in the record is the sender's and untrusted, so all of these must stay: a logo is used only if the domain's DMARC policy refuses forged mail (`quarantine` / `reject`); only plain `https` to a public host name, default port, no redirects, no proxy; the host's addresses are resolved first, private / local ones are dropped and the download is pinned to the rest; at most 512 KB, SVG only; shown only through `<img>` as a `data:` address (never inlined into the page), where it cannot run scripts or load anything. Answers, including "no logo", are cached per domain for 7 days. The certificate that proves a logo belongs to the brand (VMC) is **not** checked yet, so a look-alike domain with its own DMARC policy can publish someone else's logo: a picture is decoration, never a sign that a message is genuine.
 - Never log message bodies or addresses at default log level.
 
 ## 6. Testing
@@ -154,7 +155,7 @@ Code is not done until it is tested. The goal is to verify behaviour in small pa
 - **Rust unit tests** next to the code for every parser, state machine and decision function.
 - **Engine tests** (`mail-engine/src/tests.rs`) run every operation against the in-memory fakes in `testing.rs` and a real in-memory SQLite. New engine behaviour gets a test here first.
 - **Protocol tests** (`mail-protocols`) run the real IMAP and SMTP clients against scripted servers on local sockets (`fake_server.rs`). No container needed.
-- **Opt-in tests** (`#[ignore]`): `cargo test -p mail-protocols -- --ignored` checks TLS and STARTTLS against real public servers with a bogus login; `cargo test -p mail-host -- --ignored` round-trips through the real OS keychain. Run them after touching TLS, connection or keychain code.
+- **Opt-in tests** (`#[ignore]`): `cargo test -p mail-protocols -- --ignored` checks TLS and STARTTLS against real public servers with a bogus login, and the sender-logo lookup against real domains; `cargo test -p mail-host -- --ignored` round-trips through the real OS keychain. Run them after touching TLS, connection or keychain code.
 - **Fixtures**: real-world-shaped `.eml` samples (odd charsets, nested multipart, broken HTML, huge attachments) under `tests/fixtures`. Every rendering or parsing bug fixed gets a fixture.
 - **Autoconfig**: table-driven tests per provider, including the failure -> manual fallback path.
 - **Frontend**: Vitest. `*.spec.ts` are plain unit tests (Node); `*.svelte.spec.ts` are component tests that run in a real headless Chromium with a fake `Api`. One-time setup: `pnpm exec playwright install chromium`.
@@ -299,6 +300,7 @@ Works today (IMAP + SMTP, password sign-in):
 - Account setup: detection, manual form, real sign-in to both servers, password in the keychain; several accounts; removing an account.
 - Workspace layout: account menu at the top right (switch, add, remove); folders of the open account on the left with New message above them; message list; reader with the actions of the open message above it, grouped as answer / put away / mark. Panes are resizable, the folder list down to an icon rail.
 - Folders with roles and unread counts; message list (newest 50, "load older"); cached for offline reading; refresh on demand and every 2 minutes for the open folder.
+- Sender pictures: a brand's own logo (BIMI) under the same glass as the initials, cached, with a switch in the account menu.
 - Reading: plain text and sanitised HTML, inline images, remote images on request, attachments saved to disk.
 - Read / unread, flag, delete (to Trash, final inside Trash), archive, move to folder.
 - Writing: new message, reply, reply all, forward (plain text), Cc / Bcc, copy saved to Sent.
@@ -313,6 +315,7 @@ Not built yet, roughly in this order:
 6. Settings screen, keyboard shortcuts, theme switch, bundled font.
 7. Online autoconfig lookups (provider autoconfig files, DNS SRV) behind a trait.
 8. Self-signed / private-CA certificates with an explicit user decision.
+   Sender pictures: check the logo's certificate (VMC), and the message's own `Authentication-Results`, before showing a logo.
 9. CI on Windows, Linux and macOS; installers checked on each (only the Linux build was run so far), code signing.
 10. Web: an HTTP front for `mail-host::dispatch` and a matching `Api` in the UI.
 11. Mobile: separate native apps.
@@ -345,3 +348,8 @@ Newest last. One line per decision: date, decision, reason.
 - 2026-10-02 - Pane widths are kept in the page's `localStorage` (`workspace.layout`), not in the core. Reason: they belong to this window on this machine; move them when the settings screen exists.
 - 2026-10-02 - Menus use the browser's popover layer and are positioned from their button. Reason: nothing can clip them, and Escape / click-outside come for free.
 - 2026-10-02 - Component tests run in a 1280x800 viewport. Reason: the workspace is a desktop window; at a phone size its panes do not fit.
+- 2026-10-02 - Sender pictures come from BIMI only (no website icons, no Gravatar), on by default with a switch. Reason: owner's choice - official logos only, no third party learns who writes to the user; section 5.3 lists the lookup and its limits.
+- 2026-10-02 - Libraries for it: `hickory-resolver` (DNS TXT, system resolver settings) and `reqwest` without default features, given the app's own `rustls` setup (ring, bundled Mozilla roots). Reason: maintained, pure Rust, and TLS stays configured in one place (`mail-protocols::tls`).
+- 2026-10-02 - The organisation's domain is approximated by walking up to two parent domains instead of using the public suffix list. Reason: no extra data to ship; a lookup on a bare suffix like `co.uk` simply finds nothing.
+- 2026-10-02 - Avatars (initials and logos alike) sit under one glass overlay drawn by `Avatar.svelte`. Reason: foreign logos look part of the theme without being altered.
+- 2026-10-02 - The settings table (`settings`, name / value) exists in SQLite from this change; `sender_pictures` is its first entry.

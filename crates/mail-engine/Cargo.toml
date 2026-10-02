@@ -12,6 +12,7 @@ mail-store.workspace = true
 mail-render.workspace = true
 async-trait.workspace = true
 tokio.workspace = true
+base64 = "0.22"
 
 
 [dev-dependencies]

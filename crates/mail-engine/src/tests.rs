@@ -7,13 +7,16 @@ use mail_core::mail::{Account, Folder, FolderRole, OutgoingMessage};
 use mail_core::transport::Flag;
 use mail_store::Store;
 
-use crate::testing::{FakeConnector, FakeSecrets, PASSWORD, Remote, SharedRemote, settings};
-use crate::{Engine, PAGE};
+use crate::testing::{
+    FakeConnector, FakeLogos, FakeSecrets, LOGO, PASSWORD, Remote, SharedRemote, settings,
+};
+use crate::{Engine, LOGO_TTL, PAGE, unix_now};
 
 struct World {
     engine: Engine,
     remote: SharedRemote,
     secrets: Arc<FakeSecrets>,
+    logos: Arc<FakeLogos>,
 }
 
 fn world() -> World {
@@ -22,12 +25,19 @@ fn world() -> World {
     let connector = Arc::new(FakeConnector {
         remote: Arc::clone(&remote),
     });
-    let engine = Engine::new(Store::open_in_memory().unwrap(), connector, secrets.clone());
+    let logos = Arc::new(FakeLogos::default());
+    let engine = Engine::new(
+        Store::open_in_memory().unwrap(),
+        connector,
+        secrets.clone(),
+        logos.clone(),
+    );
 
     World {
         engine,
         remote,
         secrets,
+        logos,
     }
 }
 
@@ -595,4 +605,128 @@ async fn attachments_come_from_the_cached_message() {
     let error = world.engine.attachment(id, 0).await.unwrap_err();
 
     assert_eq!(error.kind, ErrorKind::NotFound);
+}
+
+// Sender pictures
+
+const PICTURE: &str =
+    "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciPjwvc3ZnPg==";
+
+#[tokio::test]
+async fn a_sender_whose_domain_publishes_a_logo_gets_it_as_a_picture() {
+    let world = world();
+    world.logos.publish("revolut.com", LOGO);
+
+    let picture = world.engine.sender_picture("No-Reply@Revolut.com").await;
+
+    assert_eq!(picture.unwrap().as_deref(), Some(PICTURE));
+    assert_eq!(world.logos.asked(), ["revolut.com"]);
+}
+
+#[tokio::test]
+async fn a_sender_without_a_logo_or_without_a_domain_has_no_picture() {
+    let world = world();
+
+    assert_eq!(
+        world.engine.sender_picture("jan@example.com").await,
+        Ok(None)
+    );
+    assert_eq!(
+        world.engine.sender_picture("not an address").await,
+        Ok(None)
+    );
+    assert_eq!(world.engine.sender_picture("me@localhost").await, Ok(None));
+    // Only a real domain is ever asked about.
+    assert_eq!(world.logos.asked(), ["example.com"]);
+}
+
+#[tokio::test]
+async fn a_domain_is_asked_once_and_the_answer_is_remembered() {
+    let world = world();
+    world.logos.publish("revolut.com", LOGO);
+
+    for email in [
+        "a@revolut.com",
+        "b@revolut.com",
+        "c@example.com",
+        "d@example.com",
+    ] {
+        world.engine.sender_picture(email).await.unwrap();
+    }
+    // Both "has one" and "has none" are answers worth keeping.
+    assert_eq!(world.logos.asked(), ["revolut.com", "example.com"]);
+
+    let (first, second) = tokio::join!(
+        world.engine.sender_picture("a@fresh.example"),
+        world.engine.sender_picture("b@fresh.example"),
+    );
+    assert_eq!((first, second), (Ok(None), Ok(None)));
+    assert_eq!(world.logos.asked().len(), 3);
+}
+
+#[tokio::test]
+async fn an_old_answer_is_checked_again() {
+    let world = world();
+    let (now, _) = unix_now();
+    world
+        .engine
+        .db(|store| store.put_logo("revolut.com", None, now - LOGO_TTL - 1))
+        .unwrap();
+    world.logos.publish("revolut.com", LOGO);
+
+    let picture = world.engine.sender_picture("a@revolut.com").await;
+
+    assert_eq!(picture.unwrap().as_deref(), Some(PICTURE));
+}
+
+#[tokio::test]
+async fn without_a_network_there_is_no_picture_no_error_and_a_later_retry() {
+    let world = world();
+    world.logos.publish("revolut.com", LOGO);
+    *world.logos.offline.lock().unwrap() = true;
+
+    assert_eq!(world.engine.sender_picture("a@revolut.com").await, Ok(None));
+
+    *world.logos.offline.lock().unwrap() = false;
+    let picture = world.engine.sender_picture("a@revolut.com").await;
+    assert_eq!(picture.unwrap().as_deref(), Some(PICTURE));
+}
+
+#[tokio::test]
+async fn an_old_picture_still_serves_while_offline() {
+    let world = world();
+    let (now, _) = unix_now();
+    world
+        .engine
+        .db(|store| store.put_logo("revolut.com", Some(LOGO), now - LOGO_TTL - 1))
+        .unwrap();
+    *world.logos.offline.lock().unwrap() = true;
+
+    let picture = world.engine.sender_picture("a@revolut.com").await;
+
+    assert_eq!(picture.unwrap().as_deref(), Some(PICTURE));
+}
+
+#[tokio::test]
+async fn something_that_is_not_a_drawing_is_not_shown() {
+    let world = world();
+    world.logos.publish("revolut.com", b"<html>surprise</html>");
+
+    assert_eq!(world.engine.sender_picture("a@revolut.com").await, Ok(None));
+}
+
+#[tokio::test]
+async fn turned_off_nothing_is_asked_and_it_can_be_turned_on_again() {
+    let world = world();
+    world.logos.publish("revolut.com", LOGO);
+    assert_eq!(world.engine.sender_pictures_enabled(), Ok(true));
+
+    world.engine.set_sender_pictures_enabled(false).unwrap();
+    assert_eq!(world.engine.sender_pictures_enabled(), Ok(false));
+    assert_eq!(world.engine.sender_picture("a@revolut.com").await, Ok(None));
+    assert!(world.logos.asked().is_empty());
+
+    world.engine.set_sender_pictures_enabled(true).unwrap();
+    let picture = world.engine.sender_picture("a@revolut.com").await;
+    assert_eq!(picture.unwrap().as_deref(), Some(PICTURE));
 }

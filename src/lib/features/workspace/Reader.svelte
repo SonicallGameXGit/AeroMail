@@ -13,6 +13,8 @@
         busy: boolean
         // True once the user asked to see remote images of this message.
         remoteAllowed: boolean
+        // The sender's own picture, when one was found.
+        picture: string | null
         // The actions for the open message, shown above it.
         toolbar?: Snippet
         onshowremote: () => void
@@ -20,7 +22,7 @@
         onlink: (url: string) => void
     }
 
-    let { content, busy, remoteAllowed, toolbar, onshowremote, onsave, onlink }: Props = $props()
+    let { content, busy, remoteAllowed, picture, toolbar, onshowremote, onsave, onlink }: Props = $props()
 
     // The frame cannot run scripts, so links are caught from the outside and
     // handed to the system browser instead of navigating inside the app.
@@ -75,6 +77,7 @@
                 <Avatar
                     name={sender === undefined ? '' : contactLabel(sender)}
                     seed={sender?.email ?? ''}
+                    image={picture}
                     size="large"
                 />
                 <dl>
