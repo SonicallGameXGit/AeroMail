@@ -1,0 +1,25 @@
+{
+    "appId": "app.mailclient.desktop",
+    "productName": "MailClient",
+    "directories": { "output": "release", "buildResources": "electron/icons" },
+    "files": [
+        "build/**",
+        "dist-electron/**",
+        "electron/icons/icon.png",
+        "package.json"
+    ],
+    "linux": {
+        "target": ["AppImage"],
+        "category": "Network",
+        "extraResources": [{ "from": "target/release/mailclient-core", "to": "mailclient-core" }]
+    },
+    "win": {
+        "target": ["nsis"],
+        "extraResources": [{ "from": "target/release/mailclient-core.exe", "to": "mailclient-core.exe" }]
+    },
+    "mac": {
+        "target": ["dmg"],
+        "category": "public.app-category.productivity",
+        "extraResources": [{ "from": "target/release/mailclient-core", "to": "mailclient-core" }]
+    }
+}

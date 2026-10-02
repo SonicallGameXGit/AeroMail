@@ -1,10 +1,8 @@
 // The only place in the UI that talks to the Rust core (AGENTS.md 5.2).
-// Components receive an `Api` and never call Tauri directly, so the same UI
-// can later run against another transport or a fake in tests.
+// Components receive an `Api` and never reach for the shell themselves, so the
+// same UI can later run against another transport or a fake in tests.
 
-import { invoke } from '@tauri-apps/api/core'
-import { save } from '@tauri-apps/plugin-dialog'
-import { openUrl } from '@tauri-apps/plugin-opener'
+import type { DesktopBridge, Reply } from './bridge'
 import type { Account } from './generated/Account'
 import type { AccountSettings } from './generated/AccountSettings'
 import type { AddressError } from './generated/AddressError'
@@ -134,10 +132,36 @@ export const toMailError = (error: unknown): MailError => {
     return { kind: 'Protocol', server: null, detail }
 }
 
-export const tauriApi: Api = {
+const bridge = (): DesktopBridge => {
+    if (window.mailclient === undefined) {
+        const error: MailError = {
+            kind: 'Unsupported',
+            server: null,
+            detail: 'the mail core is only reachable inside the desktop app',
+        }
+
+        throw error
+    }
+
+    return window.mailclient
+}
+
+const unwrap = <T>(reply: Reply<T>): T => {
+    if (!reply.ok) {
+        throw reply.error
+    }
+
+    return reply.value
+}
+
+const call = async <T>(command: string, params: Record<string, unknown> = {}): Promise<T> => {
+    return unwrap(await bridge().call<T>(command, params))
+}
+
+export const desktopApi: Api = {
     detectAccountSettings: async (email) => {
         try {
-            const detection = await invoke<Detection>('detect_account_settings', { email })
+            const detection = await call<Detection>('detect_account_settings', { email })
 
             return { ok: true, detection }
         } catch (error) {
@@ -148,35 +172,31 @@ export const tauriApi: Api = {
             throw error
         }
     },
-    validateAccountSettings: (settings) => invoke<SettingsIssue[]>('validate_account_settings', { settings }),
-    defaultPort: (protocol, security) => invoke<number>('default_port', { protocol, security }),
+    validateAccountSettings: (settings) => call<SettingsIssue[]>('validate_account_settings', { settings }),
+    defaultPort: (protocol, security) => call<number>('default_port', { protocol, security }),
 
-    listAccounts: () => invoke<Account[]>('list_accounts'),
-    addAccount: (settings, password) => invoke<Account>('add_account', { settings, password }),
-    removeAccount: (accountId) => invoke<void>('remove_account', { accountId }),
+    listAccounts: () => call<Account[]>('list_accounts'),
+    addAccount: (settings, password) => call<Account>('add_account', { settings, password }),
+    removeAccount: (accountId) => call<void>('remove_account', { accountId }),
 
-    listFolders: (accountId) => invoke<Folder[]>('list_folders', { accountId }),
-    refreshFolders: (accountId) => invoke<Folder[]>('refresh_folders', { accountId }),
+    listFolders: (accountId) => call<Folder[]>('list_folders', { accountId }),
+    refreshFolders: (accountId) => call<Folder[]>('refresh_folders', { accountId }),
 
-    listMessages: (folderId) => invoke<MessageSummary[]>('list_messages', { folderId }),
-    syncFolder: (folderId, grow) => invoke<MessageSummary[]>('sync_folder', { folderId, grow }),
-    openMessage: (messageId, allowRemote) => invoke<MessageContent>('open_message', { messageId, allowRemote }),
-    setSeen: (messageIds, seen) => invoke<void>('set_seen', { messageIds, seen }),
-    setFlagged: (messageIds, flagged) => invoke<void>('set_flagged', { messageIds, flagged }),
-    deleteMessages: (messageIds) => invoke<void>('delete_messages', { messageIds }),
-    moveMessages: (messageIds, folderId) => invoke<void>('move_messages', { messageIds, folderId }),
+    listMessages: (folderId) => call<MessageSummary[]>('list_messages', { folderId }),
+    syncFolder: (folderId, grow) => call<MessageSummary[]>('sync_folder', { folderId, grow }),
+    openMessage: (messageId, allowRemote) => call<MessageContent>('open_message', { messageId, allowRemote }),
+    setSeen: (messageIds, seen) => call<void>('set_seen', { messageIds, seen }),
+    setFlagged: (messageIds, flagged) => call<void>('set_flagged', { messageIds, flagged }),
+    deleteMessages: (messageIds) => call<void>('delete_messages', { messageIds }),
+    moveMessages: (messageIds, folderId) => call<void>('move_messages', { messageIds, folderId }),
 
-    replyDraft: (messageId, mode) => invoke<Draft>('reply_draft', { messageId, mode }),
-    sendMessage: (message) => invoke<void>('send_message', { message }),
+    replyDraft: (messageId, mode) => call<Draft>('reply_draft', { messageId, mode }),
+    sendMessage: (message) => call<void>('send_message', { message }),
 
     saveAttachment: async (messageId, attachment) => {
-        const path = await save({ defaultPath: attachment.name })
-        if (path === null) {
-            return false
-        }
-        await invoke<void>('save_attachment', { messageId, index: attachment.index, path })
-
-        return true
+        return unwrap(await bridge().saveAttachment(messageId, attachment.index, attachment.name))
     },
-    openExternal: (url) => openUrl(url),
+    openExternal: async (url) => {
+        unwrap(await bridge().openExternal(url))
+    },
 }

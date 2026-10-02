@@ -10,7 +10,7 @@ const gitignorePath = path.resolve(import.meta.dirname, '.gitignore')
 
 export default defineConfig(
     includeIgnoreFile(gitignorePath),
-    { ignores: ['src/lib/api/generated/', 'src-tauri/'] },
+    { ignores: ['src/lib/api/generated/'] },
     js.configs.recommended,
     ts.configs.recommended,
     svelte.configs.recommended,
@@ -48,7 +48,7 @@ export default defineConfig(
         },
     },
     {
-        files: ['**/*.ts', '**/*.js'],
+        files: ['**/*.ts', '**/*.cts', '**/*.js'],
         rules: { '@stylistic/indent': ['error', 4] },
     },
     {

@@ -11,8 +11,8 @@ A cross-platform email client in the category of Thunderbird, Spark, Mailspring.
 Platform priority, in order:
 
 1. **Desktop** - Windows, Linux (any distribution: Arch, Ubuntu, Fedora, ...), macOS; x86_64 and ARM64. Must be fully native-feeling: notifications, sounds, tray, autostart, deep links (`mailto:`), file associations, OS credential storage.
-2. **Mobile** - Android and iOS.
-3. **Web** - last and optional. Nice to have, never allowed to compromise 1 and 2.
+2. **Web** - the same UI in a browser, with the Rust core running server-side. Never allowed to compromise 1.
+3. **Mobile** - Android and iOS, as separate native apps with the same design. Not built from this codebase's UI; nothing here is bent to make that possible.
 
 ## 2. Product philosophy
 
@@ -68,8 +68,8 @@ Do not invent large features on your own. Propose them.
 
 | Layer | Choice | Why |
 | --- | --- | --- |
-| App shell | **Tauri 2** | One codebase for Windows / Linux / macOS / Android / iOS, native tray, notifications, small binaries. |
-| Core | **Rust**, as a Cargo workspace of plain crates | All mail logic is testable with `cargo test`, with no UI and no Tauri. |
+| App shell | **Electron** | Ships its own Chromium, so the app renders the same on every desktop, whatever web engine and GPU driver the system has. Native tray, notifications, dialogs. The cost (a larger download, more memory) is accepted. |
+| Core | **Rust**, as a Cargo workspace of plain crates | All mail logic is testable with `cargo test`, with no UI and no shell. The shell runs it as a child process. |
 | UI | **Svelte 5 + SvelteKit** (static adapter, SPA mode), **TypeScript** strict | Owner's preferred stack. |
 | Local storage | **SQLite** | Offline cache, search index (FTS5), settings. |
 | Secrets | OS keychain (Secret Service / Keychain / Credential Manager / mobile equivalents) | Passwords and tokens never touch disk in plain text. |
@@ -77,7 +77,7 @@ Do not invent large features on your own. Propose them.
 
 Library choices inside these layers (IMAP / SMTP / MIME parsing crates, HTML sanitiser, etc.) are made when the relevant module is first built: prefer maintained, pure-Rust, permissively licensed crates, check current state at adoption time, and record the choice in section 12.
 
-Web target note: browsers cannot open raw IMAP / SMTP sockets, so a web build would need the Rust core running server-side behind the same API the UI already uses. Keep the UI ignorant of *how* it reaches the core (see 5.2) so this stays possible, but do not build it until asked.
+Web target note: browsers cannot open raw IMAP / SMTP sockets, so a web build needs the Rust core running server-side behind the same API the UI already uses. `mail-host::dispatch` is that API with no transport attached: the desktop feeds it from stdin, a web server would feed it from requests (and needs its own answer for secrets and for several users). Keep the UI ignorant of *how* it reaches the core (see 5.2) so this stays cheap, but do not build it until asked.
 
 ## 5. Architecture
 
@@ -87,7 +87,7 @@ Web target note: browsers cannot open raw IMAP / SMTP sockets, so a web build wo
 MailClient/
     AGENTS.md
     CLAUDE.md                   imports AGENTS.md
-    Cargo.toml                  Cargo workspace (crates/*, src-tauri), shared lints
+    Cargo.toml                  Cargo workspace (crates/*), shared lints
     .cargo/config.toml          where the generated TypeScript bindings go
     crates/
         mail-core/              domain types and rules; the traits for servers and keychain; MailError
@@ -96,10 +96,14 @@ MailClient/
         mail-store/             SQLite: accounts, folders, cached messages
         mail-render/            header parsing, HTML sanitising, attachments, composing raw messages
         mail-engine/            the operations the UI calls; owns the store, uses the traits
-    src-tauri/                  thin shell: commands forward to the engine; keychain; platform/ per-OS code
+        mail-host/              the engine as a process (`mailclient-core`): commands as JSON, keychain
+    electron/                   thin shell: window, starts the core, save dialog, external links
+        icons/
+    electron-builder.json       packaging: installers with the core binary next to the app
+    scripts/                    what `pnpm dev`, `pnpm build` and `pnpm test:app` run
     src/                        SvelteKit UI (SPA, no SSR)
         lib/
-            api/                the only place that talks to the core
+            api/                the only place that talks to the core (`bridge.ts`: what the shell exposes)
                 generated/      TypeScript types generated from Rust - never edit by hand
             design/             tokens.css, base.css and the primitives (Button, TextField, GlassWindow, Modal, ...)
             i18n/               `t()` and the dictionaries
@@ -109,7 +113,7 @@ MailClient/
         routes/
 ```
 
-Dependency direction: `mail-core` <- everything; `mail-engine` uses `mail-store` and `mail-render` directly and reaches servers and the keychain only through the traits in `mail-core::transport`; only `src-tauri` knows `mail-protocols` and the keychain library.
+Dependency direction: `mail-core` <- everything; `mail-engine` uses `mail-store` and `mail-render` directly and reaches servers and the keychain only through the traits in `mail-core::transport`; only `mail-host` knows `mail-protocols` and the keychain library.
 
 Planned, created when first needed (do not add empty crates or folders):
 
@@ -120,14 +124,15 @@ Planned, created when first needed (do not add empty crates or folders):
 
 ### 5.2 Rules
 
-- **The core is headless.** Everything that is not presentation lives in `crates/`. No crate under `crates/` depends on Tauri or on the UI. If logic can be written in the core, it must be.
-- **`src-tauri` is thin.** It converts commands and events and wires native features. No business logic.
-- **The UI talks to the core through `src/lib/api` only.** Components never call Tauri `invoke` directly. This is what keeps mobile and a future web build cheap.
+- **The core is headless.** Everything that is not presentation lives in `crates/`. No crate under `crates/` depends on Electron or on the UI. If logic can be written in the core, it must be.
+- **The shell is thin.** `electron/` opens the window, runs the core and wires native features. No business logic, and nothing in TypeScript that could live in Rust.
+- **One way from the UI to the core.** The page calls `window.mailclient` (exposed by `electron/preload.cts`), the main process passes the command to `mailclient-core` as one JSON line on its stdin and returns the answer line: `{ id, ok, value }` or `{ id, ok, error }`. No local port is opened. A new operation is a new arm in `mail-host::dispatch` plus a method in `src/lib/api`.
+- **The UI talks to the core through `src/lib/api` only.** Components never touch `window.mailclient` directly. This is what keeps a web build cheap.
 - **I/O behind traits.** Mail servers and the keychain are traits in `mail-core::transport`, with real and fake implementations, so the engine is testable without a network. Storage is not behind a trait: it is always SQLite, and tests use it in memory.
 - **One error type crosses boundaries**: `MailError { kind, server, detail }`. The UI words the message from `kind` and `server`; `detail` is the technical line. Add an `ErrorKind` rather than encoding meaning in `detail`.
 - **Database ids are never reused** (`AUTOINCREMENT`): the UI and the keychain hold ids.
 - **Types cross the boundary once.** Rust types that reach the UI derive `ts_rs::TS` with `#[ts(export)]`; `cargo test` writes them to `src/lib/api/generated`. Commit the generated files, never edit them, and re-export them from `src/lib/api/index.ts`.
-- **Components get the API as a prop** (`api: Api`) instead of importing the Tauri implementation, so tests pass a fake (`features/accounts/fakeApi.ts`).
+- **Components get the API as a prop** (`api: Api`) instead of importing the desktop implementation, so tests pass a fake (`features/accounts/fakeApi.ts`).
 - **Manual path first.** For any smart feature, build the manual path first and the smart layer on top of it (2.2).
 - **Reuse before writing.** Look for an existing helper, component or token before adding a new one. Small, composable modules over large ones.
 - **Platform differences are isolated** in one module per concern (tray, notifications, sounds, keychain), with a common interface. No `cfg` / platform checks scattered through feature code.
@@ -136,6 +141,7 @@ Planned, created when first needed (do not add empty crates or folders):
 
 - Credentials and OAuth tokens only in the OS keychain (service `app.mailclient.desktop`, key `account-<id>`). Never in SQLite, logs, config files, error messages or crash reports.
 - Message HTML is untrusted input, with two layers that must both stay: `mail-render` sanitises it (and strips remote images unless allowed), and the UI shows it in an `<iframe sandbox="allow-same-origin">` (never `allow-scripts`) whose own content policy allows only inline styles and images. Remote content is blocked by default with a visible per-message opt-in. Links are caught from outside the frame and opened in the system browser, `http(s)` and `mailto` only.
+- The window runs with `contextIsolation`, `sandbox` and no Node integration; it cannot navigate away or open windows. The page's own policy (`csp` in `vite.config.ts`) allows no remote scripts. The shell opens only `http(s)` and `mailto` links, checked again in the main process.
 - TLS certificates are verified against the bundled Mozilla roots (`webpki-roots`); there is no "accept anyway" path yet.
 - TLS is required by default; plaintext or invalid certificates need an explicit, clearly worded user decision.
 - No telemetry and no network calls to anything but the user's mail providers and the documented autoconfig lookups, unless the owner asks for it and the user opts in.
@@ -148,10 +154,11 @@ Code is not done until it is tested. The goal is to verify behaviour in small pa
 - **Rust unit tests** next to the code for every parser, state machine and decision function.
 - **Engine tests** (`mail-engine/src/tests.rs`) run every operation against the in-memory fakes in `testing.rs` and a real in-memory SQLite. New engine behaviour gets a test here first.
 - **Protocol tests** (`mail-protocols`) run the real IMAP and SMTP clients against scripted servers on local sockets (`fake_server.rs`). No container needed.
-- **Opt-in tests** (`#[ignore]`): `cargo test -p mail-protocols -- --ignored` checks TLS and STARTTLS against real public servers with a bogus login; `cargo test -p mailclient -- --ignored` round-trips through the real OS keychain. Run them after touching TLS, connection or keychain code.
+- **Opt-in tests** (`#[ignore]`): `cargo test -p mail-protocols -- --ignored` checks TLS and STARTTLS against real public servers with a bogus login; `cargo test -p mail-host -- --ignored` round-trips through the real OS keychain. Run them after touching TLS, connection or keychain code.
 - **Fixtures**: real-world-shaped `.eml` samples (odd charsets, nested multipart, broken HTML, huge attachments) under `tests/fixtures`. Every rendering or parsing bug fixed gets a fixture.
 - **Autoconfig**: table-driven tests per provider, including the failure -> manual fallback path.
 - **Frontend**: Vitest. `*.spec.ts` are plain unit tests (Node); `*.svelte.spec.ts` are component tests that run in a real headless Chromium with a fake `Api`. One-time setup: `pnpm exec playwright install chromium`.
+- **Shell**: `pnpm test:app` starts the real Electron app with the built UI and an empty throwaway data folder, and checks that the page reaches the core and that its content policy lets the message frame load. It needs a display (`xvfb-run -a pnpm test:app` without one). Run it after touching `electron/`, `mail-host` or the policy.
 - A bug fix comes with a test that fails before the fix.
 - Never make a test pass by weakening or deleting it. If a test is wrong, say so and explain.
 
@@ -166,7 +173,7 @@ pnpm lint                   # ESLint, enforces the style in 7.1
 pnpm test
 ```
 
-Running the app: `pnpm tauri dev`. Linux needs the Tauri system libraries (WebKitGTK 4.1, GTK 3, libsoup 3, an appindicator library).
+Running the app: `pnpm dev` (builds the core and the shell, then opens the app with hot reload for the UI). Installer for the current system: `pnpm build`, written to `release/`. These are the only two ways to run and build; do not add variants.
 
 ## 7. Code style
 
@@ -303,7 +310,9 @@ Not built yet, roughly in this order:
 6. Settings screen, keyboard shortcuts, theme switch, bundled font, glossy icons (toolbar buttons are text for now).
 7. Online autoconfig lookups (provider autoconfig files, DNS SRV) behind a trait.
 8. Self-signed / private-CA certificates with an explicit user decision.
-9. CI on Windows, Linux and macOS. Mobile (the keychain library has no Android backend in the version used). Web.
+9. CI on Windows, Linux and macOS; installers checked on each (only the Linux build was run so far), code signing.
+10. Web: an HTTP front for `mail-host::dispatch` and a matching `Api` in the UI.
+11. Mobile: separate native apps.
 
 ## 12. Decision log
 
@@ -320,3 +329,10 @@ Newest last. One line per decision: date, decision, reason.
 - 2026-10-01 - Sync model: the folder's full UID list is fetched, a window of the newest messages is cached and reconciled (new, gone, flags); bodies are downloaded on first open and kept. Reason: simple and correct; revisit (CONDSTORE, IDLE) when large mailboxes or push matter.
 - 2026-10-01 - One password is used for both the incoming and the outgoing server of an account. Reason: true for practically every provider; split it when a real case appears.
 - 2026-10-01 - Gmail is listed with password sign-in (app password) until OAuth2 exists. Reason: it is the only way that works today.
+- 2026-10-02 - Platform priority changed to Desktop > Web > Mobile; mobile becomes separate native apps with the same design. Reason: owner's decision - one UI everywhere was costing the desktop.
+- 2026-10-02 - Shell changed from Tauri 2 to Electron. Reason: WebKitGTK made the Linux app slow and unstable (resizing redrew through the CPU; NVIDIA on Wayland crashed without a workaround that disabled the GPU path); a bundled Chromium behaves the same on every system. Tauri's own Chromium (CEF) runtime was still in development.
+- 2026-10-02 - The Rust core runs as a child process (`mailclient-core`) speaking JSON lines over stdin / stdout, not as a Node native module. Reason: no local port, a core crash cannot take the window down, and the same `dispatch` can sit behind a web server later.
+- 2026-10-02 - The data folder (`app.mailclient.desktop` in the OS data directory) and the keychain names are unchanged from the Tauri build. Reason: accounts already added keep working.
+- 2026-10-02 - The shell is compiled with plain `tsc` (the preload is a `.cts` file) and packaged with `electron-builder`. Reason: no bundler to configure for three small files.
+- 2026-10-02 - The WebKitGTK `WEBKIT_DISABLE_DMABUF_RENDERER` workaround is gone with Tauri, and the dev server port (5175) now lives only in `vite.config.ts`; the shell is told the address by `scripts/dev.js`.
+- 2026-10-02 - One command to run (`pnpm dev`) and one to build (`pnpm build`); the steps live in `scripts/`, not in a chain of package scripts. Reason: owner wants one obvious way, no variants.

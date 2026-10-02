@@ -8,6 +8,11 @@ declare global {
         // interface PageState {}
         // interface Platform {}
     }
+
+    interface Window {
+        // Present only inside the desktop app (electron/preload.cts).
+        mailclient?: import('$lib/api/bridge').DesktopBridge
+    }
 }
 
 export {}

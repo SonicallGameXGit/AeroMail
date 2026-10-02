@@ -10,11 +10,24 @@ export default defineConfig({
                 // Force runes mode for the project, except for libraries. Can be removed in svelte 6.
                 runes: ({ filename }) => filename.split(/[/\\]/).includes('node_modules') ? undefined : true,
             },
-            // The app is a client-side SPA inside the Tauri webview: no server at runtime.
+            // The app is a client-side SPA inside the desktop shell: no server at runtime.
             adapter: adapter({ fallback: 'index.html' }),
+            // The page's own policy. Message HTML has a stricter one inside its frame (AGENTS.md 5.3).
+            csp: {
+                mode: 'auto',
+                directives: {
+                    'default-src': ['self'],
+                    'style-src': ['self', 'unsafe-inline'],
+                    'img-src': ['self', 'data:', 'http:', 'https:'],
+                    'frame-src': ['self'],
+                    'connect-src': ['self'],
+                    'object-src': ['none'],
+                    'base-uri': ['self'],
+                },
+            },
         }),
     ],
-    // Tauri expects a fixed port and prints its own output.
+    // The desktop shell expects a fixed port (scripts/dev.js).
     clearScreen: false,
     server: { port: 5175, strictPort: true },
     test: {
