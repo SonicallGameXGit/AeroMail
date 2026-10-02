@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { page } from 'vitest/browser'
+import { page, userEvent } from 'vitest/browser'
 import { render } from 'vitest-browser-svelte'
-import { createFakeApi, emptyState, fakePassword, seededState } from '$lib/features/accounts/fakeApi'
+import { createFakeApi, emptyState, fakePassword, guessDetection, seededState } from '$lib/features/accounts/fakeApi'
+import '$lib/design/base.css'
 import Workspace from './Workspace.svelte'
 
 const start = (overrides: Parameters<typeof createFakeApi>[1] = {}) => {
@@ -13,6 +14,7 @@ const start = (overrides: Parameters<typeof createFakeApi>[1] = {}) => {
 
 const row = (subject: string) => page.getByRole('button', { name: subject })
 const folder = (name: string) => page.getByRole('navigation').getByRole('button', { name })
+const toolbar = () => page.getByRole('toolbar', { name: 'Message actions' })
 
 describe('Workspace', () => {
     it('asks for an account when there is none, then opens the workspace', async () => {
@@ -25,7 +27,7 @@ describe('Workspace', () => {
         await page.getByRole('button', { name: 'Connect' }).click()
 
         await expect.element(folder('Inbox')).toBeInTheDocument()
-        await expect.element(page.getByText('john@gmail.com')).toBeInTheDocument()
+        await expect.element(page.getByRole('button', { name: 'Account: john@gmail.com' })).toBeInTheDocument()
     })
 
     it('opens the inbox with its messages and the unread count', async () => {
@@ -56,8 +58,8 @@ describe('Workspace', () => {
         await page.getByRole('button', { name: 'Mark unread' }).click()
         await expect.element(page.getByRole('button', { name: 'Mark read' })).toBeInTheDocument()
 
-        await page.getByRole('button', { name: 'Flag', exact: true }).click()
-        await expect.element(page.getByRole('button', { name: 'Unflag' })).toBeInTheDocument()
+        await toolbar().getByRole('button', { name: 'Flag', exact: true }).click()
+        await expect.element(toolbar().getByRole('button', { name: 'Unflag' })).toBeInTheDocument()
 
         const message = state.messages.find((candidate) => candidate.id === 10)
         expect(message?.flags).toEqual({ seen: false, flagged: true, answered: false })
@@ -81,11 +83,12 @@ describe('Workspace', () => {
         const state = start()
 
         await row('Lunch on Friday?').click()
-        await page.getByRole('toolbar').getByRole('button', { name: 'Archive' }).click()
+        await toolbar().getByRole('button', { name: 'Archive' }).click()
         await expect.element(row('Lunch on Friday?')).not.toBeInTheDocument()
         expect(state.messages.find((message) => message.id === 11)?.folderId).toBe(3)
 
-        await page.getByRole('combobox', { name: 'Move to…' }).selectOptions('Receipts')
+        await page.getByRole('button', { name: 'Move to…' }).click()
+        await page.getByRole('menuitem', { name: 'Receipts' }).click()
         await expect.element(row('Quarterly report')).not.toBeInTheDocument()
         expect(state.messages.find((message) => message.id === 10)?.folderId).toBe(5)
         await expect.element(page.getByText('No messages here.')).toBeInTheDocument()
@@ -168,15 +171,79 @@ describe('Workspace', () => {
     it('removes an account only after confirmation', async () => {
         const state = start()
 
+        await page.getByRole('button', { name: 'Account: john@gmail.com' }).click()
         await page.getByRole('button', { name: 'Remove account: john@gmail.com' }).click()
         await page.getByRole('button', { name: 'Keep' }).click()
+        await expect.element(page.getByRole('dialog')).not.toBeInTheDocument()
         expect(state.accounts.length).toBe(1)
 
+        await page.getByRole('button', { name: 'Account: john@gmail.com' }).click()
         await page.getByRole('button', { name: 'Remove account: john@gmail.com' }).click()
         await page.getByRole('button', { name: 'Remove', exact: true }).click()
 
         await expect.element(page.getByRole('heading', { name: 'Add your email account' })).toBeInTheDocument()
         expect(state.accounts).toEqual([])
+    })
+
+    it('flags a message from its row in the list', async () => {
+        const state = start()
+
+        await page.getByRole('list', { name: 'Messages' }).getByRole('button', { name: 'Flag', exact: true }).first().click()
+
+        await expect.element(page.getByRole('button', { name: 'Unflag' })).toBeInTheDocument()
+        expect(state.messages.find((message) => message.id === 11)?.flags.flagged).toBe(true)
+        // Flagging is not reading.
+        expect(state.messages.find((message) => message.id === 11)?.flags.seen).toBe(false)
+    })
+
+    it('offers the message actions only when a message is open', async () => {
+        start()
+
+        await expect.element(row('Lunch on Friday?')).toBeInTheDocument()
+        await expect.element(toolbar()).not.toBeInTheDocument()
+
+        await row('Lunch on Friday?').click()
+        await expect.element(toolbar().getByRole('button', { name: 'Reply all' })).toBeEnabled()
+        await expect.element(toolbar().getByRole('button', { name: 'Forward' })).toBeEnabled()
+    })
+
+    it('switches between accounts from the account menu', async () => {
+        const state = seededState()
+        state.accounts.push({ id: 2, settings: { ...guessDetection.settings } })
+        const second = { accountId: 2, depth: 0, selectable: true, unread: 0, total: 0 }
+        state.folders.push({ ...second, id: 20, path: 'INBOX', name: 'INBOX', role: 'Inbox' })
+        state.folders.push({ ...second, id: 21, path: 'Clients', name: 'Clients', role: 'Other' })
+        render(Workspace, { api: createFakeApi(state) })
+
+        await expect.element(row('Lunch on Friday?')).toBeInTheDocument()
+
+        await page.getByRole('button', { name: 'Account: john@gmail.com' }).click()
+        await page.getByRole('menuitem', { name: 'me@corp.example' }).click()
+
+        await expect.element(page.getByRole('button', { name: 'Account: me@corp.example' })).toBeInTheDocument()
+        await expect.element(folder('Clients')).toBeInTheDocument()
+        await expect.element(folder('Receipts')).not.toBeInTheDocument()
+        await expect.element(page.getByText('No messages here.')).toBeInTheDocument()
+    })
+
+    it('resizes the panes with the keyboard and remembers the widths', async () => {
+        localStorage.clear()
+        start()
+
+        const edge = page.getByRole('separator', { name: 'Resize the folder list' })
+        await expect.element(edge).toHaveAttribute('aria-valuenow', '220')
+
+        edge.element().focus()
+        await userEvent.keyboard('{ArrowRight}{ArrowRight}')
+        await expect.element(edge).toHaveAttribute('aria-valuenow', '252')
+        expect(page.getByRole('navigation').element().getBoundingClientRect().width).toBe(252)
+        expect(localStorage.getItem('workspace.layout')).toContain('252')
+
+        // All the way down is the icon rail: folders stay reachable by name.
+        await userEvent.keyboard('{Home}')
+        await expect.element(edge).toHaveAttribute('aria-valuenow', '52')
+        await expect.element(folder('Trash')).toBeInTheDocument()
+        localStorage.clear()
     })
 
     it('opens links from a message in the system browser, not in the app', async () => {

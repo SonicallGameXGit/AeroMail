@@ -30,6 +30,7 @@
     /* Motion */
     --motion-fast: 120ms ease-out;
     --motion-soft: 220ms ease-out;
+    --motion-spin: 900ms;
 
     /* Backdrop: Frutiger Aero sky and water, drawn in CSS */
     --backdrop-top: #2f8fd8;
@@ -100,6 +101,59 @@
     --danger-background: #fde6e4;
     --danger-border: #d9716a;
     --danger-text: #a3231b;
+
+    /* Toolbars inside solid panes, menus, badges */
+    --toolbar-face: linear-gradient(180deg, #fbfdff 0%, #e4edf8 100%);
+    --toolbar-border: #c3d0de;
+    --menu-background: #ffffff;
+    --menu-border: #7c8794;
+    --menu-shadow: 0 6px 18px rgba(8, 35, 70, 0.35);
+    --badge-face: linear-gradient(180deg, #5db4f0 0%, #1f86d4 100%);
+    --badge-border: #134e86;
+    --badge-text: #ffffff;
+    --badge-quiet-face: rgba(13, 34, 56, 0.14);
+    --splitter-hover: rgba(60, 155, 230, 0.75);
+
+    --danger-face: linear-gradient(180deg, #f7a79c 0%, #e5604f 49%, #cf3524 50%, #dc4a38 100%);
+    --danger-face-hover: linear-gradient(180deg, #ffc0b7 0%, #f07a6a 49%, #dd4534 50%, #ea5e4c 100%);
+    --danger-face-active: linear-gradient(180deg, #d0685b 0%, #b84032 49%, #9c2417 50%, #aa3123 100%);
+    --danger-control-border: #7a1810;
+    --danger-control-text: #ffffff;
+    --danger-text-shadow: 0 1px 1px rgba(90, 10, 0, 0.7);
+
+    /* Icons: glossy materials, the same in both themes */
+    --icon-blue-light: #9ad6ff;
+    --icon-blue-dark: #1f7fd6;
+    --icon-blue-edge: #0f4f94;
+    --icon-green-light: #baf083;
+    --icon-green-dark: #3fa52e;
+    --icon-green-edge: #23701a;
+    --icon-gold-light: #ffee9a;
+    --icon-gold-dark: #f0a81c;
+    --icon-gold-edge: #a86a00;
+    --icon-red-light: #ffa695;
+    --icon-red-dark: #d83a2a;
+    --icon-red-edge: #8f1a10;
+    --icon-paper-light: #ffffff;
+    --icon-paper-dark: #d3e0ee;
+    --icon-paper-edge: #5f7590;
+    --icon-steel-light: #d5dde6;
+    --icon-steel-dark: #7d8b9e;
+    --icon-steel-edge: #3f4c5e;
+    --icon-shine: rgba(255, 255, 255, 0.5);
+    --icon-ink: #ffffff;
+
+    /* Avatars: a sender gets one of these by address */
+    --avatar-1: #2f8fd8;
+    --avatar-2: #3fa56a;
+    --avatar-3: #d9822b;
+    --avatar-4: #c2507f;
+    --avatar-5: #7a62c9;
+    --avatar-6: #2aa3a8;
+    --avatar-shine: linear-gradient(180deg, rgba(255, 255, 255, 0.5) 0%, rgba(255, 255, 255, 0.1) 49%, rgba(255, 255, 255, 0) 50%);
+    --avatar-border: rgba(0, 0, 0, 0.35);
+    --avatar-text: #ffffff;
+    --avatar-text-shadow: 0 1px 1px rgba(0, 0, 0, 0.5);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -163,6 +217,15 @@
         --danger-background: #45211f;
         --danger-border: #b3524b;
         --danger-text: #ff9d95;
+
+        --toolbar-face: linear-gradient(180deg, #343b43 0%, #2a3037 100%);
+        --toolbar-border: #14181c;
+        --menu-background: #2a3037;
+        --menu-border: #07090b;
+        --menu-shadow: 0 6px 18px rgba(0, 0, 0, 0.7);
+        --badge-border: #06121d;
+        --badge-quiet-face: rgba(255, 255, 255, 0.14);
+        --danger-control-border: #2a0704;
     }
 }
 
@@ -226,6 +289,15 @@
     --danger-background: #45211f;
     --danger-border: #b3524b;
     --danger-text: #ff9d95;
+
+    --toolbar-face: linear-gradient(180deg, #343b43 0%, #2a3037 100%);
+    --toolbar-border: #14181c;
+    --menu-background: #2a3037;
+    --menu-border: #07090b;
+    --menu-shadow: 0 6px 18px rgba(0, 0, 0, 0.7);
+    --badge-border: #06121d;
+    --badge-quiet-face: rgba(255, 255, 255, 0.14);
+    --danger-control-border: #2a0704;
 }
 
 /* Users who ask for less transparency get opaque chrome. */
@@ -240,5 +312,6 @@
     :root {
         --motion-fast: 0ms;
         --motion-soft: 0ms;
+        --motion-spin: 0ms;
     }
 }

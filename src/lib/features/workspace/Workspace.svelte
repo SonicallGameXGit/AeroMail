@@ -5,15 +5,30 @@
     import Backdrop from '$lib/design/Backdrop.svelte'
     import Button from '$lib/design/Button.svelte'
     import GlassWindow from '$lib/design/GlassWindow.svelte'
+    import Icon from '$lib/design/Icon.svelte'
     import Modal from '$lib/design/Modal.svelte'
     import Notice from '$lib/design/Notice.svelte'
+    import Splitter from '$lib/design/Splitter.svelte'
     import AccountSetup from '$lib/features/accounts/AccountSetup.svelte'
     import { t } from '$lib/i18n'
+    import AccountMenu from './AccountMenu.svelte'
     import Composer from './Composer.svelte'
+    import {
+        clampList,
+        clampSidebar,
+        defaultLayout,
+        listRange,
+        loadLayout,
+        railWidth,
+        saveLayout,
+        sidebarRange,
+        type Layout,
+    } from './layout'
+    import MessageActions from './MessageActions.svelte'
     import MessageList from './MessageList.svelte'
     import Reader from './Reader.svelte'
     import Sidebar from './Sidebar.svelte'
-    import { emptyForm, errorMessage, folderLabel, formFromDraft, toOutgoing, type ComposeForm } from './workspace'
+    import { emptyForm, errorMessage, formFromDraft, groupFolders, toOutgoing, type ComposeForm } from './workspace'
 
     let { api }: { api: Api } = $props()
 
@@ -23,6 +38,8 @@
     // null until the account list was loaded.
     let accounts = $state<Account[] | null>(null)
     let folders = $state<Record<number, Folder[]>>({})
+    // The account whose folders are shown.
+    let accountId = $state<number | null>(null)
     let selectedFolder = $state<Folder | null>(null)
     let messages = $state<MessageSummary[]>([])
     let selectedId = $state<number | null>(null)
@@ -34,14 +51,24 @@
     let error = $state<MailError | null>(null)
 
     let addingAccount = $state(false)
+    // The account whose removal is waiting for confirmation.
+    let removing = $state<Account | null>(null)
+    let layout = $state<Layout>(loadLayout())
     let form = $state<ComposeForm | null>(null)
     let sending = $state(false)
     let sendError = $state<MailError | null>(null)
 
     let selected = $derived(messages.find((message) => message.id === selectedId) ?? null)
-    let accountFolders = $derived(selectedFolder === null ? [] : folders[selectedFolder.accountId] ?? [])
+    let account = $derived(accounts?.find((candidate) => candidate.id === accountId) ?? null)
+    let accountFolders = $derived(accountId === null ? [] : folders[accountId] ?? [])
     let archiveFolder = $derived(accountFolders.find((folder) => folder.role === 'Archive' && folder.selectable) ?? null)
-    let moveTargets = $derived(accountFolders.filter((folder) => folder.selectable && folder.id !== selectedFolder?.id))
+    // Offered in the order the sidebar shows them.
+    let moveTargets = $derived.by(() => {
+        const groups = groupFolders(accountFolders)
+
+        return [...groups.main, ...groups.custom.map((entry) => entry.folder)]
+            .filter((folder) => folder.id !== selectedFolder?.id)
+    })
     let hasMore = $derived(selectedFolder !== null && messages.length < selectedFolder.total)
 
     // Runs an action and shows its failure in the error bar instead of losing it.
@@ -88,6 +115,20 @@
         await sync(folder, false)
     })
 
+    const selectAccount = async (next: Account) => {
+        accountId = next.id
+        selectedFolder = null
+        messages = []
+        selectedId = null
+        content = null
+
+        const list = (folders[next.id] ?? []).filter((folder) => folder.selectable)
+        const first = list.find((folder) => folder.role === 'Inbox') ?? list[0]
+        if (first !== undefined) {
+            await selectFolder(first)
+        }
+    }
+
     const load = () => guard(async () => {
         const list = await api.listAccounts()
         for (const account of list) {
@@ -95,13 +136,14 @@
         }
         accounts = list
 
-        const first = list[0]
-        if (first === undefined) {
+        // The open account stays open; the first one is opened otherwise.
+        const open = list.find((candidate) => candidate.id === accountId) ?? list[0]
+        if (open === undefined) {
+            accountId = null
             return
         }
-        const inbox = (folders[first.id] ?? []).find((folder) => folder.role === 'Inbox')
-        if (inbox !== undefined) {
-            await selectFolder(inbox)
+        if (open.id !== accountId || selectedFolder === null) {
+            await selectAccount(open)
         }
     })
 
@@ -164,13 +206,10 @@
         }
     })
 
-    const toggleFlagged = () => guard(async () => {
-        if (selected === null) {
-            return
-        }
-        const flagged = !selected.flags.flagged
-        await api.setFlagged([selected.id], flagged)
-        patch(selected.id, (current) => ({ ...current, flags: { ...current.flags, flagged } }))
+    const toggleFlagged = (message: MessageSummary) => guard(async () => {
+        const flagged = !message.flags.flagged
+        await api.setFlagged([message.id], flagged)
+        patch(message.id, (current) => ({ ...current, flags: { ...current.flags, flagged } }))
     })
 
     // After a message leaves the folder, the one below it takes its place.
@@ -207,20 +246,8 @@
         await leave(id)
     })
 
-    const chooseTarget = (event: Event) => {
-        if (!(event.currentTarget instanceof HTMLSelectElement)) {
-            return
-        }
-        const folderId = Number(event.currentTarget.value)
-        event.currentTarget.value = ''
-        if (Number.isInteger(folderId) && folderId > 0) {
-            moveTo(folderId)
-        }
-    }
-
     const compose = () => {
-        const accountId = selectedFolder?.accountId ?? accounts?.[0]?.id
-        if (accountId === undefined) {
+        if (accountId === null) {
             return
         }
         sendError = null
@@ -268,9 +295,11 @@
         load()
     }
 
-    const removeAccount = (account: Account) => guard(async () => {
-        await api.removeAccount(account.id)
-        if (selectedFolder !== null && selectedFolder.accountId === account.id) {
+    const removeAccount = (gone: Account) => guard(async () => {
+        removing = null
+        await api.removeAccount(gone.id)
+        if (accountId === gone.id) {
+            accountId = null
             selectedFolder = null
             messages = []
             selectedId = null
@@ -278,6 +307,11 @@
         }
         await load()
     })
+
+    const resize = (change: Partial<Layout>) => {
+        layout = { ...layout, ...change }
+        saveLayout(layout)
+    }
 
     onMount(() => {
         load()
@@ -314,45 +348,30 @@
 {:else}
     <Backdrop fill>
         <div class="frame">
-            <div class="toolbar" role="toolbar" aria-label={t('app.name')}>
-                <Button variant="accent" onclick={compose}>{t('toolbar.compose')}</Button>
-                <span class="gap"></span>
-                <Button disabled={selected === null} onclick={() => reply('Reply')}>{t('toolbar.reply')}</Button>
-                <Button disabled={selected === null} onclick={() => reply('ReplyAll')}>{t('toolbar.replyAll')}</Button>
-                <Button disabled={selected === null} onclick={() => reply('Forward')}>{t('toolbar.forward')}</Button>
-                <span class="gap"></span>
-                <Button
-                    disabled={selected === null || archiveFolder === null}
-                    onclick={() => archiveFolder !== null && moveTo(archiveFolder.id)}
-                >{t('toolbar.archive')}</Button>
-                <Button disabled={selected === null} onclick={remove}>{t('toolbar.delete')}</Button>
-                <select
-                    class="move"
-                    aria-label={t('toolbar.moveTo')}
-                    disabled={selected === null || moveTargets.length === 0}
-                    onchange={chooseTarget}
-                >
-                    <option value="">{t('toolbar.moveTo')}</option>
-                    {#each moveTargets as folder (folder.id)}
-                        <option value={folder.id}>{folderLabel(folder)}</option>
-                    {/each}
-                </select>
-                <span class="gap"></span>
-                <Button disabled={selected === null} onclick={toggleSeen}>
-                    {selected !== null && !selected.flags.seen ? t('toolbar.markRead') : t('toolbar.markUnread')}
-                </Button>
-                <Button disabled={selected === null} onclick={toggleFlagged}>
-                    {selected !== null && selected.flags.flagged ? t('toolbar.unflag') : t('toolbar.flag')}
-                </Button>
+            <header class="top">
+                <span class="brand">
+                    <Icon name="mail" size={22} />
+                    <span>{t('app.name')}</span>
+                </span>
                 <span class="spacer"></span>
-                <Button disabled={syncing || selectedFolder === null} onclick={refresh}>{t('toolbar.refresh')}</Button>
-            </div>
+                {#if account !== null}
+                    <AccountMenu
+                        {accounts}
+                        {folders}
+                        current={account}
+                        onselect={(next) => guard(() => selectAccount(next))}
+                        onadd={() => addingAccount = true}
+                        onremove={(next) => removing = next}
+                    />
+                {/if}
+            </header>
 
             {#if error !== null}
                 <div class="error">
                     <Notice kind="danger">
                         <span class="error-row">
-                            <span>
+                            <Icon name="warning" size={20} />
+                            <span class="error-text">
                                 {errorMessage(error)}
                                 <small>{t('error.details')}: {error.detail}</small>
                             </span>
@@ -362,42 +381,97 @@
                 </div>
             {/if}
 
-            <div class="panes">
-                <Sidebar
-                    {accounts}
-                    {folders}
-                    selectedFolderId={selectedFolder?.id ?? null}
-                    onselect={selectFolder}
-                    onadd={() => addingAccount = true}
-                    onremove={removeAccount}
+            <div class="panes" style:--sidebar-width={layout.sidebar + 'px'} style:--list-width={layout.list + 'px'} style:--rail-width={railWidth + 'px'}>
+                <div class="pane sidebar">
+                    <Sidebar
+                        folders={accountFolders}
+                        selectedFolderId={selectedFolder?.id ?? null}
+                        onselect={selectFolder}
+                        oncompose={compose}
+                    />
+                </div>
+                <Splitter
+                    label={t('sidebar.resize')}
+                    value={layout.sidebar}
+                    min={sidebarRange.min}
+                    max={sidebarRange.max}
+                    onchange={(width) => resize({ sidebar: clampSidebar(width) })}
+                    onreset={() => resize({ sidebar: defaultLayout.sidebar })}
                 />
-                <MessageList
-                    {messages}
-                    {selectedId}
-                    {hasMore}
-                    busy={syncing}
-                    onselect={openMessage}
-                    onmore={() => guard(async () => {
-                        if (selectedFolder !== null) {
-                            await sync(selectedFolder, true)
-                        }
-                    })}
+                <div class="pane list">
+                    <MessageList
+                        folder={selectedFolder}
+                        {messages}
+                        {selectedId}
+                        {hasMore}
+                        busy={syncing}
+                        onselect={openMessage}
+                        onflag={toggleFlagged}
+                        onrefresh={refresh}
+                        onmore={() => guard(async () => {
+                            if (selectedFolder !== null) {
+                                await sync(selectedFolder, true)
+                            }
+                        })}
+                    />
+                </div>
+                <Splitter
+                    label={t('list.resize')}
+                    value={layout.list}
+                    min={listRange.min}
+                    max={listRange.max}
+                    onchange={(width) => resize({ list: clampList(width) })}
+                    onreset={() => resize({ list: defaultLayout.list })}
                 />
-                <Reader
-                    {content}
-                    busy={opening}
-                    {remoteAllowed}
-                    onshowremote={showRemote}
-                    onsave={saveAttachment}
-                    onlink={openLink}
-                />
+                <div class="pane reader">
+                    <Reader
+                        {content}
+                        busy={opening}
+                        {remoteAllowed}
+                        toolbar={selected === null ? undefined : actions}
+                        onshowremote={showRemote}
+                        onsave={saveAttachment}
+                        onlink={openLink}
+                    />
+                </div>
             </div>
         </div>
     </Backdrop>
 
+    {#snippet actions()}
+        {#if selected !== null}
+            {@const message = selected}
+            <MessageActions
+                {message}
+                canArchive={archiveFolder !== null}
+                {moveTargets}
+                onreply={reply}
+                onarchive={() => archiveFolder !== null && moveTo(archiveFolder.id)}
+                onmove={moveTo}
+                ondelete={remove}
+                onseen={toggleSeen}
+                onflag={() => toggleFlagged(message)}
+            />
+        {/if}
+    {/snippet}
+
     {#if addingAccount}
-        <Modal title={t('sidebar.addAccount')}>
+        <Modal title={t('account.add')}>
             <AccountSetup {api} onadded={accountAdded} oncancel={() => addingAccount = false} />
+        </Modal>
+    {/if}
+
+    {#if removing !== null}
+        {@const gone = removing}
+        <Modal title={t('account.remove')}>
+            <div class="confirm">
+                <Icon name="warning" size={32} />
+                <p>{t('account.removeConfirm', { email: gone.settings.email })}</p>
+            </div>
+            <div class="choices">
+                <Button onclick={() => removing = null}>{t('account.removeNo')}</Button>
+                <Button tone="danger" icon="trash" onclick={() => removeAccount(gone)}>{t('account.removeYes')}</Button>
+            </div>
         </Modal>
     {/if}
 
@@ -432,40 +506,24 @@
         overflow: hidden;
     }
 
-    .toolbar {
+    .top {
         display: flex;
-        flex-wrap: wrap;
         align-items: center;
-        gap: var(--space-1);
+        gap: var(--space-3);
         padding: var(--space-2);
+        color: var(--glass-text);
     }
 
-    .gap {
-        width: var(--space-2);
+    .brand {
+        display: flex;
+        align-items: center;
+        gap: var(--space-2);
+        padding-left: var(--space-1);
+        text-shadow: var(--glass-text-shadow);
     }
 
     .spacer {
         flex: 1;
-    }
-
-    .move {
-        min-height: 26px;
-        max-width: 140px;
-        padding: var(--space-1) var(--space-2);
-        border: 1px solid var(--control-border);
-        border-radius: var(--radius-control);
-        background: var(--control-face);
-        color: var(--control-text);
-        box-shadow: inset 0 0 0 1px var(--control-inner);
-    }
-
-    .move:disabled {
-        opacity: 0.55;
-    }
-
-    .move option {
-        background: var(--field-background);
-        color: var(--text);
     }
 
     .error {
@@ -475,8 +533,24 @@
     .error-row {
         display: flex;
         align-items: center;
-        justify-content: space-between;
         gap: var(--space-3);
+    }
+
+    .error-text {
+        flex: 1;
+    }
+
+    .confirm {
+        display: flex;
+        align-items: center;
+        gap: var(--space-3);
+    }
+
+    .choices {
+        display: flex;
+        justify-content: flex-end;
+        gap: var(--space-2);
+        margin-top: var(--space-5);
     }
 
     small {
@@ -488,8 +562,7 @@
 
     .panes {
         grid-row: 3;
-        display: grid;
-        grid-template-columns: 220px minmax(240px, 340px) minmax(0, 1fr);
+        display: flex;
         min-height: 0;
         margin: 0 var(--space-2) var(--space-2);
         border: 1px solid var(--surface-border);
@@ -497,26 +570,30 @@
         overflow: hidden;
     }
 
-    .panes > :global(*) {
+    .pane {
+        display: grid;
+        min-width: 0;
         min-height: 0;
     }
 
-    .panes > :global(* + *) {
-        border-left: 1px solid var(--surface-border);
+    .sidebar {
+        flex: none;
+        width: var(--sidebar-width);
+    }
+
+    /* When the window is too narrow for the chosen widths, the list gives way before the reader does. */
+    .list {
+        flex: 0 1 var(--list-width);
+        min-width: 200px;
+    }
+
+    .reader {
+        flex: 1 0 320px;
     }
 
     @media (max-width: 860px) {
-        .panes {
-            grid-template-columns: 180px minmax(0, 1fr);
-            grid-template-rows: minmax(0, 2fr) minmax(0, 3fr);
-        }
-
-        .panes > :global(:first-child) {
-            grid-row: 1 / 3;
-        }
-
-        .panes > :global(:last-child) {
-            border-top: 1px solid var(--surface-border);
+        .sidebar {
+            width: var(--rail-width);
         }
     }
 </style>

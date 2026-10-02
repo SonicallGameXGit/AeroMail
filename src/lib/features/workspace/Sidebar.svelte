@@ -1,173 +1,141 @@
 <script lang="ts">
-    import type { Account, Folder } from '$lib/api'
+    import type { Folder } from '$lib/api'
     import Button from '$lib/design/Button.svelte'
+    import Icon from '$lib/design/Icon.svelte'
     import { t } from '$lib/i18n'
-    import { folderIndent, folderLabel } from './workspace'
+    import { folderIcon, folderLabel, groupFolders } from './workspace'
 
     type Props = {
-        accounts: Account[]
-        folders: Record<number, Folder[]>
+        // The folders of the account that is open.
+        folders: Folder[]
         selectedFolderId: number | null
         onselect: (folder: Folder) => void
-        onadd: () => void
-        onremove: (account: Account) => void
+        oncompose: () => void
     }
 
-    let { accounts, folders, selectedFolderId, onselect, onadd, onremove }: Props = $props()
+    let { folders, selectedFolderId, onselect, oncompose }: Props = $props()
 
-    // The account whose removal is waiting for confirmation.
-    let removing = $state<number | null>(null)
+    let groups = $derived(groupFolders(folders))
 
-    const confirmRemove = (account: Account) => {
-        removing = null
-        onremove(account)
+    // Read out with the name, because the rail hides the text.
+    const describe = (folder: Folder): string => {
+        if (folder.unread === 0) {
+            return folderLabel(folder)
+        }
+
+        return t('sidebar.folderUnread', { name: folderLabel(folder), count: String(folder.unread) })
     }
 </script>
 
-<nav class="sidebar" aria-label={t('sidebar.folders')}>
-    <div class="accounts">
-        {#each accounts as account (account.id)}
-            <section>
-                <header>
-                    <span class="email" title={account.settings.email}>{account.settings.email}</span>
-                    <button
-                        class="remove"
-                        type="button"
-                        title={t('sidebar.removeAccount')}
-                        aria-label={`${t('sidebar.removeAccount')}: ${account.settings.email}`}
-                        onclick={() => removing = account.id}
-                    >×</button>
-                </header>
+{#snippet row(folder: Folder, indent: number)}
+    <li>
+        <button
+            class="folder"
+            class:selected={folder.id === selectedFolderId}
+            class:unread={folder.unread > 0}
+            class:inbox={folder.role === 'Inbox'}
+            type="button"
+            title={folderLabel(folder)}
+            aria-label={describe(folder)}
+            aria-current={folder.id === selectedFolderId}
+            style:--indent={indent}
+            onclick={() => onselect(folder)}
+        >
+            <Icon name={folderIcon(folder)} />
+            <span class="name">{folderLabel(folder)}</span>
+            {#if folder.unread > 0}
+                <span class="count">{folder.unread}</span>
+            {/if}
+        </button>
+    </li>
+{/snippet}
 
-                {#if removing === account.id}
-                    <div class="confirm" role="alertdialog" aria-label={t('sidebar.removeAccount')}>
-                        <p>{t('sidebar.removeConfirm', { email: account.settings.email })}</p>
-                        <div class="choices">
-                            <Button onclick={() => confirmRemove(account)}>{t('sidebar.remove')}</Button>
-                            <Button onclick={() => removing = null}>{t('sidebar.keep')}</Button>
-                        </div>
-                    </div>
-                {/if}
-
-                <ul>
-                    {#each folders[account.id] ?? [] as folder (folder.id)}
-                        {#if folder.selectable}
-                            <li>
-                                <button
-                                    class="folder"
-                                    class:selected={folder.id === selectedFolderId}
-                                    type="button"
-                                    aria-current={folder.id === selectedFolderId}
-                                    style:padding-left={`calc(var(--space-3) + ${folderIndent(folder)} * var(--space-4))`}
-                                    onclick={() => onselect(folder)}
-                                >
-                                    <span class="name" class:unread={folder.unread > 0}>{folderLabel(folder)}</span>
-                                    {#if folder.unread > 0}
-                                        <span class="count">{folder.unread}</span>
-                                    {/if}
-                                </button>
-                            </li>
-                        {/if}
-                    {/each}
-                </ul>
-            </section>
-        {/each}
+<aside class="sidebar">
+    <div class="compose">
+        <Button variant="accent" size="large" icon="compose" onclick={oncompose}>{t('toolbar.compose')}</Button>
     </div>
 
-    <footer>
-        <Button onclick={onadd}>{t('sidebar.addAccount')}</Button>
-    </footer>
-</nav>
+    <nav aria-label={t('sidebar.folders')}>
+        <ul>
+            {#each groups.main as folder (folder.id)}
+                {@render row(folder, 0)}
+            {/each}
+        </ul>
+
+        {#if groups.custom.length > 0}
+            <h2><span>{t('sidebar.folders')}</span></h2>
+            <ul>
+                {#each groups.custom as entry (entry.folder.id)}
+                    {@render row(entry.folder, entry.indent)}
+                {/each}
+            </ul>
+        {/if}
+    </nav>
+</aside>
 
 <style>
     .sidebar {
+        container: sidebar / inline-size;
         display: flex;
         flex-direction: column;
         min-height: 0;
         color: var(--glass-text);
     }
 
-    .accounts {
+    .compose {
+        display: grid;
+        padding: var(--space-2);
+    }
+
+    nav {
         flex: 1;
         min-height: 0;
         overflow-y: auto;
-        padding: var(--space-2);
-    }
-
-    section + section {
-        margin-top: var(--space-4);
-    }
-
-    header {
-        display: flex;
-        align-items: center;
-        gap: var(--space-1);
-        padding: var(--space-1) var(--space-2);
-        font-weight: 600;
-        text-shadow: var(--glass-text-shadow);
-    }
-
-    .email {
-        flex: 1;
-        min-width: 0;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-    }
-
-    .remove {
-        width: 20px;
-        height: 20px;
-        padding: 0;
-        border: 1px solid transparent;
-        border-radius: var(--radius-control);
-        background: none;
-        color: inherit;
-        line-height: 1;
-        opacity: 0.6;
-    }
-
-    .remove:hover,
-    .remove:focus-visible {
-        border-color: var(--control-border);
-        background: var(--control-face);
-        color: var(--control-text);
-        opacity: 1;
-        outline: none;
-    }
-
-    .confirm {
-        margin: var(--space-1) 0 var(--space-2);
-        padding: var(--space-2);
-        border: 1px solid var(--warning-border);
-        border-radius: var(--radius-control);
-        background: var(--warning-background);
-        color: var(--text);
-    }
-
-    .choices {
-        display: flex;
-        gap: var(--space-2);
-        margin-top: var(--space-2);
+        padding: 0 var(--space-2) var(--space-2);
     }
 
     ul {
+        display: grid;
+        gap: 1px;
         margin: 0;
         padding: 0;
         list-style: none;
     }
 
+    /* The second group is announced by a ruled caption, like a group box. */
+    h2 {
+        display: flex;
+        align-items: center;
+        gap: var(--space-2);
+        margin: var(--space-3) var(--space-1) var(--space-1);
+        font-size: var(--font-size-small);
+        font-weight: 400;
+        opacity: 0.75;
+        text-shadow: var(--glass-text-shadow);
+    }
+
+    h2::after {
+        content: '';
+        flex: 1;
+        border-top: 1px solid currentColor;
+        opacity: 0.4;
+    }
+
     .folder {
+        position: relative;
         display: flex;
         align-items: center;
         gap: var(--space-2);
         width: 100%;
+        min-height: 30px;
         padding: var(--space-1) var(--space-2);
+        padding-left: calc(var(--space-2) + var(--indent) * var(--space-4));
         border: 1px solid transparent;
         border-radius: var(--radius-control);
         background: none;
         color: inherit;
         text-align: left;
+        cursor: default;
     }
 
     .folder:hover {
@@ -195,17 +163,68 @@
         white-space: nowrap;
     }
 
-    .name.unread {
+    .unread .name {
         font-weight: 600;
     }
 
     .count {
+        flex: none;
+        min-width: 22px;
+        padding: 0 var(--space-1);
+        border: 1px solid transparent;
+        border-radius: var(--radius-panel);
+        background: var(--badge-quiet-face);
         font-size: var(--font-size-small);
         font-weight: 600;
-        color: var(--unread-mark);
+        text-align: center;
     }
 
-    footer {
-        padding: var(--space-2);
+    /* New mail arrives in the inbox: its count is the one that stands out. */
+    .inbox .count {
+        border-color: var(--badge-border);
+        background: var(--badge-face);
+        color: var(--badge-text);
+    }
+
+    /* The rail: too narrow for names, so icons only. */
+    @container sidebar (max-width: 100px) {
+        .compose {
+            padding: var(--space-2) var(--space-1);
+        }
+
+        .compose :global(.label),
+        .name,
+        h2 span {
+            display: none;
+        }
+
+        nav {
+            padding: 0 var(--space-1) var(--space-2);
+        }
+
+        h2 {
+            margin: var(--space-2) var(--space-1);
+        }
+
+        .folder {
+            justify-content: center;
+            padding: var(--space-1) 0;
+        }
+
+        .count {
+            display: none;
+        }
+
+        .unread::after {
+            content: '';
+            position: absolute;
+            top: var(--space-1);
+            right: var(--space-1);
+            width: 8px;
+            height: 8px;
+            border: 1px solid var(--badge-border);
+            border-radius: 50%;
+            background: var(--badge-face);
+        }
     }
 </style>

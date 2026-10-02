@@ -40,6 +40,8 @@ export default defineConfig({
                     browser: {
                         enabled: true,
                         provider: playwright(),
+                        // A desktop window, so the workspace is tested at the size it is used at.
+                        viewport: { width: 1280, height: 800 },
                         instances: [{ browser: 'chromium', headless: true }],
                     },
                     include: ['src/**/*.svelte.{test,spec}.{js,ts}'],

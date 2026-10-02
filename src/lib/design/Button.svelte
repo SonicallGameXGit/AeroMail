@@ -1,31 +1,73 @@
 <script lang="ts">
     import type { Snippet } from 'svelte'
+    import Icon from './Icon.svelte'
+    import type { IconName } from './icons'
 
     type Props = {
-        children: Snippet
-        variant?: 'normal' | 'accent' | 'link'
+        children?: Snippet
+        // `tool` is a toolbar button: flat until the pointer is over it.
+        variant?: 'normal' | 'accent' | 'link' | 'tool'
+        // `danger` marks an action that destroys something.
+        tone?: 'neutral' | 'danger'
+        size?: 'normal' | 'large'
+        icon?: IconName
+        // Names a button that shows only an icon; also its tooltip.
+        label?: string
+        // Set for a button that stays on or off.
+        pressed?: boolean
         type?: 'button' | 'submit'
         disabled?: boolean
         onclick?: () => void
+        // Id of the popover this button opens and closes.
+        popovertarget?: string
+        expanded?: boolean
     }
 
     let {
         children,
         variant = 'normal',
+        tone = 'neutral',
+        size = 'normal',
+        icon,
+        label,
+        pressed,
         type = 'button',
         disabled = false,
         onclick,
+        popovertarget,
+        expanded,
     }: Props = $props()
 </script>
 
-<button class={variant} {type} {disabled} {onclick}>
-    {@render children()}
+<button
+    class={[variant, tone, size, { bare: children === undefined }]}
+    {type}
+    {disabled}
+    {onclick}
+    {popovertarget}
+    title={label}
+    aria-label={label}
+    aria-pressed={pressed}
+    aria-expanded={expanded}
+    aria-haspopup={popovertarget === undefined ? undefined : 'menu'}
+>
+    {#if icon !== undefined}
+        <Icon name={icon} size={size === 'large' ? 22 : 18} />
+    {/if}
+    {#if children !== undefined}
+        <span class="label">{@render children()}</span>
+    {/if}
 </button>
 
 <style>
     button {
-        min-height: 26px;
-        padding: var(--space-1) var(--space-4);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: var(--space-2);
+        min-width: 0;
+        min-height: 28px;
+        padding: var(--space-1) var(--space-3);
         border: 1px solid var(--control-border);
         border-radius: var(--radius-control);
         background: var(--control-face);
@@ -35,12 +77,36 @@
         transition: box-shadow var(--motion-fast), border-color var(--motion-fast);
     }
 
+    .label {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .bare {
+        padding: var(--space-1);
+        min-width: 28px;
+    }
+
+    .large {
+        min-height: 38px;
+        padding: var(--space-2) var(--space-4);
+        font-weight: 600;
+    }
+
+    .large.bare {
+        padding: var(--space-2);
+    }
+
     button:hover:not(:disabled) {
         border-color: var(--control-border-hover);
         background: var(--control-face-hover);
     }
 
-    button:active:not(:disabled) {
+    button:active:not(:disabled),
+    button[aria-pressed='true']:not(:disabled),
+    button[aria-expanded='true']:not(:disabled) {
         background: var(--control-face-active);
         box-shadow: var(--control-pressed-shadow);
     }
@@ -51,7 +117,7 @@
     }
 
     button:disabled {
-        opacity: 0.55;
+        opacity: 0.45;
     }
 
     .accent {
@@ -68,6 +134,40 @@
 
     .accent:active:not(:disabled) {
         background: var(--accent-face-active);
+    }
+
+    .normal.danger {
+        border-color: var(--danger-control-border);
+        background: var(--danger-face);
+        color: var(--danger-control-text);
+        text-shadow: var(--danger-text-shadow);
+    }
+
+    .normal.danger:hover:not(:disabled) {
+        border-color: var(--danger-control-border);
+        background: var(--danger-face-hover);
+    }
+
+    .normal.danger:active:not(:disabled) {
+        background: var(--danger-face-active);
+    }
+
+    .tool:not(:hover, :active, :focus-visible, [aria-pressed='true'], [aria-expanded='true']),
+    .tool:disabled {
+        border-color: transparent;
+        background: none;
+        box-shadow: none;
+        color: inherit;
+    }
+
+    .tool.danger:hover:not(:disabled) {
+        border-color: var(--danger-control-border);
+        background: var(--danger-face);
+        color: var(--danger-control-text);
+    }
+
+    .tool.danger:active:not(:disabled) {
+        background: var(--danger-face-active);
     }
 
     .link,

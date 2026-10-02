@@ -105,11 +105,11 @@ MailClient/
         lib/
             api/                the only place that talks to the core (`bridge.ts`: what the shell exposes)
                 generated/      TypeScript types generated from Rust - never edit by hand
-            design/             tokens.css, base.css and the primitives (Button, TextField, GlassWindow, Modal, ...)
+            design/             tokens.css, base.css and the primitives (Button, Icon, Avatar, Menu, Splitter, TextField, GlassWindow, Modal, ...)
             i18n/               `t()` and the dictionaries
             features/
                 accounts/       account setup screen, its logic, the fake Api for tests
-                workspace/      folders, message list, reader, composer
+                workspace/      account menu, folders, message list, reader with its actions, composer
         routes/
 ```
 
@@ -254,7 +254,9 @@ What "Windows Aero" means concretely here:
 - **Depth**: soft drop shadows and glow separate layers; no hard flat blocks, no heavy black shadows.
 - **Shape**: small radii (roughly 3-6px), not pills and not sharp squares.
 - **Colour**: cool blue-led palette with green / aqua accents; saturated but airy. Slate theme: charcoal / graphite glass with the same accents, less saturation.
-- **Icons**: detailed, glossy, slightly dimensional - not thin monochrome line icons.
+- **Icons**: detailed, glossy, slightly dimensional - not thin monochrome line icons. They are drawn in `design/Icon.svelte` from a few glossy materials (tokens `--icon-*`); only small structural glyphs (chevron, close, check) are flat.
+- **Pictures before words**: an action or a place is recognised by its icon first. A button keeps its text only when it is the main action of its group (New message, Reply); every icon-only control has a tooltip and an accessible name.
+- **Buttons say what they are**: accent (the one main action), normal, tool (flat until hovered, for toolbars), danger (red, for what destroys something).
 - **Type**: a humanist sans in the Segoe UI / Frutiger spirit, bundled with the app so it looks the same on every OS. Not bundled yet: `--font-ui` is a system font stack for now; pick an openly licensed font and bundle it.
 - **Motion**: short, soft fades and glows. Nothing bouncy.
 
@@ -295,6 +297,7 @@ Each must work on Windows, Linux and macOS, behind one interface (5.2):
 Works today (IMAP + SMTP, password sign-in):
 
 - Account setup: detection, manual form, real sign-in to both servers, password in the keychain; several accounts; removing an account.
+- Workspace layout: account menu at the top right (switch, add, remove); folders of the open account on the left with New message above them; message list; reader with the actions of the open message above it, grouped as answer / put away / mark. Panes are resizable, the folder list down to an icon rail.
 - Folders with roles and unread counts; message list (newest 50, "load older"); cached for offline reading; refresh on demand and every 2 minutes for the open folder.
 - Reading: plain text and sanitised HTML, inline images, remote images on request, attachments saved to disk.
 - Read / unread, flag, delete (to Trash, final inside Trash), archive, move to folder.
@@ -307,7 +310,7 @@ Not built yet, roughly in this order:
 3. Search, threading, unified inbox, multi-select and bulk actions, undo, drafts, signatures.
 4. Composer: attachments, rich text. Marking the original as answered after a reply.
 5. Native integration: new-mail notifications, sounds, tray, autostart, `mailto:`, `.eml`. IMAP IDLE for push.
-6. Settings screen, keyboard shortcuts, theme switch, bundled font, glossy icons (toolbar buttons are text for now).
+6. Settings screen, keyboard shortcuts, theme switch, bundled font.
 7. Online autoconfig lookups (provider autoconfig files, DNS SRV) behind a trait.
 8. Self-signed / private-CA certificates with an explicit user decision.
 9. CI on Windows, Linux and macOS; installers checked on each (only the Linux build was run so far), code signing.
@@ -336,3 +339,9 @@ Newest last. One line per decision: date, decision, reason.
 - 2026-10-02 - The shell is compiled with plain `tsc` (the preload is a `.cts` file) and packaged with `electron-builder`. Reason: no bundler to configure for three small files.
 - 2026-10-02 - The WebKitGTK `WEBKIT_DISABLE_DMABUF_RENDERER` workaround is gone with Tauri, and the dev server port (5175) now lives only in `vite.config.ts`; the shell is told the address by `scripts/dev.js`.
 - 2026-10-02 - One command to run (`pnpm dev`) and one to build (`pnpm build`); the steps live in `scripts/`, not in a chain of package scripts. Reason: owner wants one obvious way, no variants.
+- 2026-10-02 - Workspace laid out by what things belong to: accounts in a menu at the top right, New message and folders in the sidebar, message actions above the open message (not in one global toolbar). One account's folders are shown at a time. Reason: owner found the single row of identical text buttons and the text-only sidebar hard to read.
+- 2026-10-02 - Icons are hand-drawn SVG inside `Icon.svelte`, no icon library. Reason: no maintained set matches the glossy Aero look, and line icons are rejected by section 8.
+- 2026-10-02 - Well-known folders are shown first in one fixed order (Inbox, Flagged, Drafts, Sent, Archive, Junk, Trash, All mail), the user's own folders below in the server's order. Reason: a folder is found by position and icon, the same on every provider.
+- 2026-10-02 - Pane widths are kept in the page's `localStorage` (`workspace.layout`), not in the core. Reason: they belong to this window on this machine; move them when the settings screen exists.
+- 2026-10-02 - Menus use the browser's popover layer and are positioned from their button. Reason: nothing can clip them, and Escape / click-outside come for free.
+- 2026-10-02 - Component tests run in a 1280x800 viewport. Reason: the workspace is a desktop window; at a phone size its panes do not fit.

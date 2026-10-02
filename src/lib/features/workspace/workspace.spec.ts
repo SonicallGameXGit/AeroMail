@@ -1,13 +1,16 @@
 import { describe, expect, it } from 'vitest'
-import type { Folder, MessageSummary } from '$lib/api'
+import type { Account, Folder, MessageSummary } from '$lib/api'
 import {
     contactFull,
     emptyForm,
     errorMessage,
-    folderIndent,
+    accountLabel,
+    folderIcon,
     folderLabel,
     formFromDraft,
     frameDocument,
+    groupFolders,
+    inboxUnread,
     isSafeLink,
     senderLabel,
     shortDate,
@@ -55,9 +58,71 @@ describe('folders', () => {
         expect(folderLabel(folder({ name: 'Receipts', role: 'Other' }))).toBe('Receipts')
     })
 
-    it('indents only ordinary folders', () => {
-        expect(folderIndent(folder({ role: 'Sent', depth: 1 }))).toBe(0)
-        expect(folderIndent(folder({ role: 'Other', depth: 2 }))).toBe(2)
+    it('gives every well-known folder its own picture', () => {
+        expect(folderIcon(folder({ role: 'Trash' }))).toBe('trash')
+        expect(folderIcon(folder({ role: 'Inbox' }))).toBe('inbox')
+        expect(folderIcon(folder({ role: 'Other' }))).toBe('folder')
+    })
+
+    it('shows well-known folders first, in one order for every account', () => {
+        const groups = groupFolders([
+            folder({ id: 1, role: 'All' }),
+            folder({ id: 2, role: 'Trash' }),
+            folder({ id: 3, role: 'Other', name: 'Notes' }),
+            folder({ id: 4, role: 'Inbox' }),
+            folder({ id: 5, role: 'Sent' }),
+            folder({ id: 6, role: 'Junk', selectable: false }),
+        ])
+
+        expect(groups.main.map((entry) => entry.id)).toEqual([4, 5, 2, 1])
+        expect(groups.custom.map((entry) => entry.folder.id)).toEqual([3])
+    })
+
+    it('indents a folder only under parents that are shown', () => {
+        const groups = groupFolders([
+            folder({ id: 1, role: 'Other', name: '[Gmail]', depth: 0, selectable: false }),
+            folder({ id: 2, role: 'Other', name: 'Important', depth: 1 }),
+            folder({ id: 3, role: 'Sent', name: 'Sent Mail', depth: 1 }),
+            folder({ id: 4, role: 'Other', name: 'Work', depth: 0 }),
+            folder({ id: 5, role: 'Other', name: 'Projects', depth: 1 }),
+            folder({ id: 6, role: 'Other', name: 'Old', depth: 2 }),
+            folder({ id: 7, role: 'Other', name: 'Notes', depth: 0 }),
+        ])
+
+        expect(groups.custom.map((entry) => [entry.folder.name, entry.indent])).toEqual([
+            ['Important', 0],
+            ['Work', 0],
+            ['Projects', 1],
+            ['Old', 2],
+            ['Notes', 0],
+        ])
+    })
+
+    it('counts unread mail of the inbox only', () => {
+        expect(inboxUnread([
+            folder({ role: 'Inbox', unread: 3 }),
+            folder({ role: 'Junk', unread: 40 }),
+        ])).toBe(3)
+        expect(inboxUnread([])).toBe(0)
+    })
+
+    it('calls an account by its owner\'s name, or by its address', () => {
+        const account = (displayName: string): Account => {
+            const server = { host: 'x', port: 1, security: 'Tls', auth: 'Password', username: 'u' } as const
+
+            return {
+                id: 1,
+                settings: {
+                    email: 'john@gmail.com',
+                    displayName,
+                    incoming: { ...server, protocol: 'Imap' },
+                    outgoing: { ...server, protocol: 'Smtp' },
+                },
+            }
+        }
+
+        expect(accountLabel(account('John'))).toBe('John')
+        expect(accountLabel(account(' '))).toBe('john@gmail.com')
     })
 })
 

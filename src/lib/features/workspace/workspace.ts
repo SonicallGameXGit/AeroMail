@@ -1,6 +1,7 @@
 // Presentation helpers of the workspace. No mail rules live here.
 
-import type { Contact, Draft, Folder, MailError, MessageSummary, OutgoingMessage } from '$lib/api'
+import type { Account, Contact, Draft, Folder, FolderRole, MailError, MessageSummary, OutgoingMessage } from '$lib/api'
+import type { IconName } from '$lib/design/icons'
 import { t } from '$lib/i18n'
 
 export const folderLabel = (folder: Folder): string => {
@@ -12,13 +13,84 @@ export const folderLabel = (folder: Folder): string => {
     return t(`folder.${folder.role}`)
 }
 
-// Well-known folders sit at the top level whatever the server's nesting is.
-export const folderIndent = (folder: Folder): number => {
-    if (folder.role !== 'Other') {
-        return 0
+// Which picture stands for a folder, so it can be found without reading.
+export const folderIcon = (folder: Folder): IconName => {
+    const icons: Record<FolderRole, IconName> = {
+        Inbox: 'inbox',
+        Flagged: 'flag',
+        Drafts: 'drafts',
+        Sent: 'sent',
+        Archive: 'archive',
+        Junk: 'junk',
+        Trash: 'trash',
+        All: 'all',
+        Other: 'folder',
     }
 
-    return folder.depth
+    return icons[folder.role]
+}
+
+// The order well-known folders are shown in, whatever the server's order is.
+const mainOrder: FolderRole[] = [
+    'Inbox',
+    'Flagged',
+    'Drafts',
+    'Sent',
+    'Archive',
+    'Junk',
+    'Trash',
+    'All',
+]
+
+export type FolderEntry = {
+    folder: Folder
+    // How many of the folder's parents are shown above it.
+    indent: number
+}
+
+export type FolderGroups = {
+    // Well-known folders, in the same order for every account.
+    main: Folder[]
+    // The user's own folders, in the server's order.
+    custom: FolderEntry[]
+}
+
+// Splits an account's folders (in the server's tree order) into the two
+// groups of the sidebar. A folder is indented only under parents that are
+// shown with it: '[Gmail]/Important' sits at the top level, because
+// '[Gmail]' itself is never shown.
+export const groupFolders = (folders: Folder[]): FolderGroups => {
+    const shown = folders.filter((folder) => folder.selectable)
+    const main = mainOrder.flatMap((role) => shown.filter((folder) => folder.role === role))
+
+    const custom: FolderEntry[] = []
+    // For each level above the current folder: is that parent shown in `custom`?
+    let parents: boolean[] = []
+    for (const folder of folders) {
+        const listed = folder.selectable && folder.role === 'Other'
+        parents = parents.slice(0, folder.depth)
+        if (listed) {
+            custom.push({ folder, indent: parents.filter((parent) => parent).length })
+        }
+        parents[folder.depth] = listed
+    }
+
+    return { main, custom }
+}
+
+export const inboxUnread = (folders: Folder[]): number => {
+    return folders
+        .filter((folder) => folder.role === 'Inbox')
+        .reduce((sum, folder) => sum + folder.unread, 0)
+}
+
+// What an account is called in the window: the name its owner typed, or the address.
+export const accountLabel = (account: Account): string => {
+    if (account.settings.displayName.trim() === '') {
+        return account.settings.email
+    }
+
+    return account.settings.displayName
 }
 
 export const contactLabel = (contact: Contact): string => {
