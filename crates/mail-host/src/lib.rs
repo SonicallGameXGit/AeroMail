@@ -48,6 +48,12 @@ struct NewAccount {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct SignInId {
+    sign_in_id: u32,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct AccountId {
     account_id: i64,
 }
@@ -164,6 +170,21 @@ pub async fn dispatch(engine: &Engine, command: &str, params: Value) -> Result<V
         "add_account" => {
             let NewAccount { settings, password } = args(params)?;
             reply(engine.add_account(settings, &password).await)
+        }
+        // Adding an account on the provider's own page: the shell opens the
+        // address `begin_sign_in` gives in the browser, `finish_sign_in`
+        // answers once the user is done there.
+        "begin_sign_in" => {
+            let Settings { settings } = args(params)?;
+            reply(engine.begin_sign_in(settings).await)
+        }
+        "finish_sign_in" => {
+            let SignInId { sign_in_id } = args(params)?;
+            reply(engine.finish_sign_in(sign_in_id).await)
+        }
+        "cancel_sign_in" => {
+            let SignInId { sign_in_id } = args(params)?;
+            reply(engine.cancel_sign_in(sign_in_id))
         }
         "remove_account" => {
             let AccountId { account_id } = args(params)?;

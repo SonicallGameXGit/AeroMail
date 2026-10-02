@@ -3,7 +3,10 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use mail_core::account::{ServerRole, ServerSettings};
 use mail_core::error::{ErrorKind, MailError, MailResult};
-use mail_core::transport::{Connector, Envelope, IncomingSession, LogoSource, SecretStore};
+use mail_core::oauth::Tokens;
+use mail_core::transport::{
+    Connector, Envelope, IncomingSession, LogoSource, PendingSignIn, SecretStore, SignInFlow,
+};
 use mail_engine::Engine;
 use mail_store::Store;
 use serde_json::{Value, json};
@@ -62,12 +65,40 @@ impl LogoSource for OneLogo {
     }
 }
 
+/// A provider whose page is never answered.
+struct SilentPage;
+
+struct NeverDone;
+
+#[async_trait]
+impl PendingSignIn for NeverDone {
+    fn url(&self) -> &str {
+        "https://accounts.example.com/sign-in"
+    }
+
+    async fn finish(self: Box<Self>) -> MailResult<Tokens> {
+        std::future::pending().await
+    }
+}
+
+#[async_trait]
+impl SignInFlow for SilentPage {
+    async fn begin(&self, _: &str, _: &str) -> MailResult<Box<dyn PendingSignIn>> {
+        Ok(Box::new(NeverDone))
+    }
+
+    async fn refresh(&self, _: &str, _: &str) -> MailResult<Tokens> {
+        Err(MailError::new(ErrorKind::SignIn, "invalid_grant"))
+    }
+}
+
 fn engine() -> Engine {
     Engine::new(
         Store::open_in_memory().unwrap(),
         Arc::new(Offline),
         Arc::new(NoSecrets),
         Arc::new(OneLogo),
+        Arc::new(SilentPage),
     )
 }
 
@@ -122,6 +153,36 @@ async fn an_engine_failure_keeps_its_kind_and_server() {
     .unwrap_err();
     assert_eq!(added["kind"], "Connect");
     assert_eq!(added["server"], "Incoming");
+}
+
+#[tokio::test]
+async fn a_sign_in_is_begun_finished_and_cancelled_under_the_names_the_ui_uses() {
+    let engine = engine();
+    let detection = dispatch(
+        &engine,
+        "detect_account_settings",
+        json!({ "email": "someone@example.org" }),
+    )
+    .await
+    .unwrap();
+    let mut settings = detection["settings"].clone();
+    settings["incoming"]["auth"] = json!("OAuth2");
+    settings["outgoing"]["auth"] = json!("OAuth2");
+
+    let started = dispatch(&engine, "begin_sign_in", json!({ "settings": settings }))
+        .await
+        .unwrap();
+    assert_eq!(
+        started,
+        json!({ "id": 1, "url": "https://accounts.example.com/sign-in" })
+    );
+
+    let (finished, cancelled) = tokio::join!(
+        dispatch(&engine, "finish_sign_in", json!({ "signInId": 1 })),
+        dispatch(&engine, "cancel_sign_in", json!({ "signInId": 1 })),
+    );
+    assert_eq!(cancelled, Ok(Value::Null));
+    assert_eq!(finished.unwrap_err()["kind"], "SignIn");
 }
 
 #[tokio::test]

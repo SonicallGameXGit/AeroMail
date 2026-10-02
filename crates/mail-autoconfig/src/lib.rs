@@ -42,6 +42,9 @@ pub struct Detection {
     pub provider: Option<String>,
     /// Applies when the user signs in with a password instead of OAuth2.
     pub password_kind: PasswordKind,
+    /// Whether this build can sign in on the provider's own page (OAuth2)
+    /// for the suggested servers.
+    pub sign_in_available: bool,
     /// Suggested settings, with IMAP as the incoming protocol.
     pub settings: AccountSettings,
     /// POP3 alternative for the incoming server, when the provider offers one.
@@ -50,23 +53,38 @@ pub struct Detection {
 
 /// Suggests settings for `email` without touching the network.
 pub fn detect(email: &str) -> Result<Detection, AddressError> {
+    detect_with(email, mail_core::oauth::sign_in_ready)
+}
+
+/// `detect`, told which servers this build can sign in to through their
+/// provider's page.
+fn detect_with(
+    email: &str,
+    sign_in_ready: impl Fn(&str) -> bool,
+) -> Result<Detection, AddressError> {
     let address = EmailAddress::parse(email)?;
 
     let detection = match providers::find(address.domain()) {
-        Some(provider) => from_provider(&address, provider),
+        Some(provider) => from_provider(&address, provider, sign_in_ready(provider.imap.host)),
         None => guess(&address),
     };
 
     Ok(detection)
 }
 
-fn from_provider(address: &EmailAddress, provider: &Provider) -> Detection {
+fn from_provider(address: &EmailAddress, provider: &Provider, sign_in_ready: bool) -> Detection {
+    // The provider's page is the one-click way. Where it cannot be used and
+    // a password works too, the password is suggested instead of a dead end.
+    let auth = match provider.auth {
+        AuthMethod::OAuth2 if !sign_in_ready && provider.accepts_password => AuthMethod::Password,
+        auth => auth,
+    };
     let server = |protocol: Protocol, endpoint: &Endpoint| ServerSettings {
         protocol,
         host: endpoint.host.to_string(),
         port: endpoint.port,
         security: endpoint.security,
-        auth: provider.auth,
+        auth,
         username: address.full(),
     };
 
@@ -74,6 +92,7 @@ fn from_provider(address: &EmailAddress, provider: &Provider) -> Detection {
         source: DetectionSource::BuiltIn,
         provider: Some(provider.name.to_string()),
         password_kind: provider.password_kind,
+        sign_in_available: sign_in_ready,
         settings: AccountSettings {
             email: address.full(),
             display_name: String::new(),
@@ -101,6 +120,7 @@ fn guess(address: &EmailAddress) -> Detection {
         source: DetectionSource::Guess,
         provider: None,
         password_kind: PasswordKind::Account,
+        sign_in_available: false,
         settings: AccountSettings {
             email: address.full(),
             display_name: String::new(),
@@ -116,6 +136,11 @@ mod tests {
     use mail_core::account::validate;
 
     use super::*;
+
+    /// A build without any registered client id, whatever this one has.
+    fn detect(email: &str) -> Result<Detection, AddressError> {
+        detect_with(email, |_| false)
+    }
 
     #[test]
     fn detects_gmail() {
@@ -136,6 +161,25 @@ mod tests {
         assert_eq!(settings.outgoing.protocol, Protocol::Smtp);
         assert_eq!(settings.outgoing.host, "smtp.gmail.com");
         assert_eq!(settings.outgoing.port, 465);
+    }
+
+    #[test]
+    fn gmail_signs_in_on_googles_page_when_the_build_can() {
+        let detection = detect_with("a@gmail.com", |host| host == "imap.gmail.com").unwrap();
+
+        assert!(detection.sign_in_available);
+        assert_eq!(detection.settings.incoming.auth, AuthMethod::OAuth2);
+        assert_eq!(detection.settings.outgoing.auth, AuthMethod::OAuth2);
+        // Still said for whoever switches to a password by hand.
+        assert_eq!(detection.password_kind, PasswordKind::AppPassword);
+    }
+
+    #[test]
+    fn a_provider_that_takes_no_password_keeps_its_sign_in_even_when_unavailable() {
+        let detection = detect("a@outlook.com").unwrap();
+
+        assert!(!detection.sign_in_available);
+        assert_eq!(detection.settings.incoming.auth, AuthMethod::OAuth2);
     }
 
     #[test]
@@ -180,6 +224,7 @@ mod tests {
         assert_eq!(detection.settings.outgoing.host, "smtp.my-company.example");
         assert_eq!(detection.settings.outgoing.port, 465);
         assert_eq!(detection.settings.incoming.auth, AuthMethod::Password);
+        assert!(!detection.sign_in_available);
         assert_eq!(detection.pop3.unwrap().host, "pop.my-company.example");
     }
 
@@ -198,8 +243,11 @@ mod tests {
             .collect();
         emails.push("user@unknown.example".to_string());
 
-        for email in emails {
-            let detection = detect(&email).unwrap();
+        for (email, ready) in emails
+            .iter()
+            .flat_map(|email| [(email, false), (email, true)])
+        {
+            let detection = detect_with(email, |_| ready).unwrap();
             assert_eq!(validate(&detection.settings), Vec::new(), "{email}");
 
             if let Some(pop3) = detection.pop3 {

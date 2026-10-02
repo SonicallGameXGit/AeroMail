@@ -6,6 +6,7 @@ use async_trait::async_trait;
 use crate::account::ServerSettings;
 use crate::error::MailResult;
 use crate::mail::{FolderRole, MessageFlags};
+use crate::oauth::Tokens;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteFolder {
@@ -79,27 +80,53 @@ pub struct Envelope<'a> {
     pub recipients: &'a [String],
 }
 
+/// `secret` is what the server's sign-in method (`ServerSettings::auth`)
+/// asks for: the password, or an access token for OAuth2.
 #[async_trait]
 pub trait Connector: Send + Sync {
     async fn connect_incoming(
         &self,
         server: &ServerSettings,
-        password: &str,
+        secret: &str,
     ) -> MailResult<Box<dyn IncomingSession>>;
 
     /// Connects and signs in to the outgoing server without sending anything.
-    async fn check_outgoing(&self, server: &ServerSettings, password: &str) -> MailResult<()>;
+    async fn check_outgoing(&self, server: &ServerSettings, secret: &str) -> MailResult<()>;
 
     async fn send(
         &self,
         server: &ServerSettings,
-        password: &str,
+        secret: &str,
         envelope: Envelope<'_>,
         raw: &[u8],
     ) -> MailResult<()>;
 }
 
-/// Where passwords live. Implemented on top of the OS keychain.
+/// A sign-in on the provider's page that the user has not finished yet.
+#[async_trait]
+pub trait PendingSignIn: Send {
+    /// The page to open in the user's browser.
+    fn url(&self) -> &str;
+
+    /// Waits until the user is done on that page and trades the provider's
+    /// answer for tokens. Dropping it instead gives the sign-in up.
+    async fn finish(self: Box<Self>) -> MailResult<Tokens>;
+}
+
+/// Signing in on the provider's own page (OAuth2). The real one listens for
+/// the browser and talks to the provider (`mail-protocols`).
+#[async_trait]
+pub trait SignInFlow: Send + Sync {
+    /// Prepares a sign-in for the provider behind the mail server `host`;
+    /// `email` only pre-selects the account on the page.
+    async fn begin(&self, host: &str, email: &str) -> MailResult<Box<dyn PendingSignIn>>;
+
+    /// Gets a fresh access token from the long-lived one.
+    async fn refresh(&self, host: &str, refresh_token: &str) -> MailResult<Tokens>;
+}
+
+/// Where passwords and sign-in tokens live. Implemented on top of the OS
+/// keychain.
 pub trait SecretStore: Send + Sync {
     fn get(&self, key: &str) -> MailResult<Option<String>>;
     fn set(&self, key: &str, secret: &str) -> MailResult<()>;

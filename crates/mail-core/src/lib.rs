@@ -8,5 +8,6 @@ pub mod draft;
 pub mod error;
 pub mod logo;
 pub mod mail;
+pub mod oauth;
 pub mod settings;
 pub mod transport;

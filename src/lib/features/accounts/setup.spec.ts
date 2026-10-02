@@ -2,7 +2,16 @@ import { describe, expect, it } from 'vitest'
 import { isAddressError } from '$lib/api'
 import { t } from '$lib/i18n'
 import { createFakeApi, gmailDetection, guessDetection } from './fakeApi'
-import { domainOf, parsePort, serverOf, switchIncomingProtocol, switchSecurity, withServer } from './setup'
+import {
+    domainOf,
+    parsePort,
+    serverOf,
+    switchIncomingProtocol,
+    switchSecurity,
+    usesSignIn,
+    withAuth,
+    withServer,
+} from './setup'
 
 const api = createFakeApi()
 
@@ -52,6 +61,17 @@ describe('switchSecurity', () => {
         expect(serverOf(settings, 'Outgoing').security).toBe('StartTls')
         expect(serverOf(settings, 'Outgoing').port).toBe(587)
         expect(serverOf(settings, 'Incoming')).toEqual(gmailDetection.settings.incoming)
+    })
+})
+
+describe('withAuth', () => {
+    it('changes the sign-in of both servers and nothing else', () => {
+        const settings = withAuth(gmailDetection.settings, 'OAuth2')
+
+        expect(settings.incoming).toEqual({ ...gmailDetection.settings.incoming, auth: 'OAuth2' })
+        expect(settings.outgoing).toEqual({ ...gmailDetection.settings.outgoing, auth: 'OAuth2' })
+        expect(usesSignIn(settings)).toBe(true)
+        expect(usesSignIn(withAuth(settings, 'Password'))).toBe(false)
     })
 })
 

@@ -1,4 +1,4 @@
-//! Passwords in the OS keychain: Secret Service on Linux, Keychain on macOS,
+//! Passwords and sign-in tokens in the OS keychain: Secret Service on Linux, Keychain on macOS,
 //! Credential Manager on Windows.
 
 use keyring::Entry;

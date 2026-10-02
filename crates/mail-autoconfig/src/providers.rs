@@ -19,7 +19,11 @@ pub(crate) struct Provider {
     pub imap: Endpoint,
     pub pop3: Option<Endpoint>,
     pub smtp: Endpoint,
+    /// The sign-in the provider wants.
     pub auth: AuthMethod,
+    /// Whether a password also works where `auth` is OAuth2. It is then the
+    /// manual way in, and the only one in a build that cannot sign in there.
+    pub accepts_password: bool,
     pub password_kind: PasswordKind,
 }
 
@@ -46,9 +50,8 @@ pub(crate) const PROVIDERS: &[Provider] = &[
         imap: tls("imap.gmail.com", 993),
         pop3: Some(tls("pop.gmail.com", 995)),
         smtp: tls("smtp.gmail.com", 465),
-        // Gmail also offers OAuth2; until the app supports it, an app
-        // password is the way in.
-        auth: AuthMethod::Password,
+        auth: AuthMethod::OAuth2,
+        accepts_password: true,
         password_kind: PasswordKind::AppPassword,
     },
     Provider {
@@ -58,6 +61,7 @@ pub(crate) const PROVIDERS: &[Provider] = &[
         pop3: Some(tls("outlook.office365.com", 995)),
         smtp: start_tls("smtp-mail.outlook.com", 587),
         auth: AuthMethod::OAuth2,
+        accepts_password: false,
         password_kind: PasswordKind::AppPassword,
     },
     Provider {
@@ -67,6 +71,7 @@ pub(crate) const PROVIDERS: &[Provider] = &[
         pop3: Some(tls("pop.mail.yahoo.com", 995)),
         smtp: tls("smtp.mail.yahoo.com", 465),
         auth: AuthMethod::Password,
+        accepts_password: true,
         password_kind: PasswordKind::AppPassword,
     },
     Provider {
@@ -76,6 +81,7 @@ pub(crate) const PROVIDERS: &[Provider] = &[
         pop3: None,
         smtp: start_tls("smtp.mail.me.com", 587),
         auth: AuthMethod::Password,
+        accepts_password: true,
         password_kind: PasswordKind::AppPassword,
     },
     Provider {
@@ -85,6 +91,7 @@ pub(crate) const PROVIDERS: &[Provider] = &[
         pop3: Some(tls("pop.fastmail.com", 995)),
         smtp: tls("smtp.fastmail.com", 465),
         auth: AuthMethod::Password,
+        accepts_password: true,
         password_kind: PasswordKind::AppPassword,
     },
     Provider {
@@ -94,6 +101,7 @@ pub(crate) const PROVIDERS: &[Provider] = &[
         pop3: Some(tls("pop.aol.com", 995)),
         smtp: tls("smtp.aol.com", 465),
         auth: AuthMethod::Password,
+        accepts_password: true,
         password_kind: PasswordKind::AppPassword,
     },
     Provider {
@@ -103,6 +111,7 @@ pub(crate) const PROVIDERS: &[Provider] = &[
         pop3: Some(tls("pop.gmx.com", 995)),
         smtp: start_tls("mail.gmx.com", 587),
         auth: AuthMethod::Password,
+        accepts_password: true,
         password_kind: PasswordKind::Account,
     },
     Provider {
@@ -112,6 +121,7 @@ pub(crate) const PROVIDERS: &[Provider] = &[
         pop3: Some(tls("pop.gmx.net", 995)),
         smtp: start_tls("mail.gmx.net", 587),
         auth: AuthMethod::Password,
+        accepts_password: true,
         password_kind: PasswordKind::Account,
     },
     Provider {
@@ -121,6 +131,7 @@ pub(crate) const PROVIDERS: &[Provider] = &[
         pop3: Some(tls("pop.yandex.com", 995)),
         smtp: tls("smtp.yandex.com", 465),
         auth: AuthMethod::Password,
+        accepts_password: true,
         password_kind: PasswordKind::AppPassword,
     },
     Provider {
@@ -130,6 +141,7 @@ pub(crate) const PROVIDERS: &[Provider] = &[
         pop3: Some(tls("pop.mail.ru", 995)),
         smtp: tls("smtp.mail.ru", 465),
         auth: AuthMethod::Password,
+        accepts_password: true,
         password_kind: PasswordKind::AppPassword,
     },
     Provider {
@@ -139,6 +151,7 @@ pub(crate) const PROVIDERS: &[Provider] = &[
         pop3: Some(tls("pop.zoho.com", 995)),
         smtp: tls("smtp.zoho.com", 465),
         auth: AuthMethod::Password,
+        accepts_password: true,
         password_kind: PasswordKind::Account,
     },
 ];

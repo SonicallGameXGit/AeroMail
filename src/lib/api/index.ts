@@ -20,6 +20,7 @@ import type { Protocol } from './generated/Protocol'
 import type { ReplyMode } from './generated/ReplyMode'
 import type { Security } from './generated/Security'
 import type { SettingsIssue } from './generated/SettingsIssue'
+import type { SignIn } from './generated/SignIn'
 
 export type { Account } from './generated/Account'
 export type { AccountSettings } from './generated/AccountSettings'
@@ -47,6 +48,7 @@ export type { Security } from './generated/Security'
 export type { ServerRole } from './generated/ServerRole'
 export type { ServerSettings } from './generated/ServerSettings'
 export type { SettingsIssue } from './generated/SettingsIssue'
+export type { SignIn } from './generated/SignIn'
 
 export type DetectResult =
     | { ok: true, detection: Detection }
@@ -61,6 +63,12 @@ export type Api = {
 
     listAccounts: () => Promise<Account[]>
     addAccount: (settings: AccountSettings, password: string) => Promise<Account>
+    // Adding an account on the provider's own page instead of with a password:
+    // `beginSignIn` gives the page to open in the browser, `finishSignIn`
+    // resolves once the user is done there, or rejects when it is cancelled.
+    beginSignIn: (settings: AccountSettings) => Promise<SignIn>
+    finishSignIn: (signInId: number) => Promise<Account>
+    cancelSignIn: (signInId: number) => Promise<void>
     removeAccount: (accountId: number) => Promise<void>
 
     listFolders: (accountId: number) => Promise<Folder[]>
@@ -106,6 +114,7 @@ const errorKinds: readonly string[] = [
     'Connect',
     'Tls',
     'Auth',
+    'SignIn',
     'Unsupported',
     'Protocol',
     'Invalid',
@@ -163,8 +172,15 @@ const unwrap = <T>(reply: Reply<T>): T => {
     return reply.value
 }
 
+// Components pass their reactive state, which the shell cannot copy across
+// (it is a proxy, not plain data). The core takes JSON anyway, so this is
+// exactly what arrives there.
+const plain = (params: Record<string, unknown>): unknown => {
+    return JSON.parse(JSON.stringify(params))
+}
+
 const call = async <T>(command: string, params: Record<string, unknown> = {}): Promise<T> => {
-    return unwrap(await bridge().call<T>(command, params))
+    return unwrap(await bridge().call<T>(command, plain(params)))
 }
 
 export const desktopApi: Api = {
@@ -186,6 +202,9 @@ export const desktopApi: Api = {
 
     listAccounts: () => call<Account[]>('list_accounts'),
     addAccount: (settings, password) => call<Account>('add_account', { settings, password }),
+    beginSignIn: (settings) => call<SignIn>('begin_sign_in', { settings }),
+    finishSignIn: (signInId) => call<Account>('finish_sign_in', { signInId }),
+    cancelSignIn: (signInId) => call<void>('cancel_sign_in', { signInId }),
     removeAccount: (accountId) => call<void>('remove_account', { accountId }),
 
     listFolders: (accountId) => call<Folder[]>('list_folders', { accountId }),

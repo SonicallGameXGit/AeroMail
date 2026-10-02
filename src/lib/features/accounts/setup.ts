@@ -36,6 +36,20 @@ export const withServer = (
     return { ...settings, outgoing: server }
 }
 
+// One secret opens both servers of an account, so both sign in the same way.
+export const withAuth = (settings: AccountSettings, auth: AuthMethod): AccountSettings => {
+    return {
+        ...settings,
+        incoming: { ...settings.incoming, auth },
+        outgoing: { ...settings.outgoing, auth },
+    }
+}
+
+// Whether the account signs in on its provider's page instead of with a password.
+export const usesSignIn = (settings: AccountSettings): boolean => {
+    return settings.incoming.auth === 'OAuth2' || settings.outgoing.auth === 'OAuth2'
+}
+
 // Switching the incoming protocol: take the provider's own endpoint when it is
 // known, otherwise keep what the user typed and only move to the standard port.
 export const switchIncomingProtocol = async (

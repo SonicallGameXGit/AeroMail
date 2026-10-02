@@ -13,6 +13,9 @@ pub enum ErrorKind {
     Tls,
     /// The server rejected the username or password.
     Auth,
+    /// Signing in on the provider's page was not completed, or the
+    /// permission it gave is no longer valid.
+    SignIn,
     /// The settings ask for something the app cannot do yet.
     Unsupported,
     /// The server answered in an unexpected way.

@@ -11,6 +11,7 @@
         Security,
         ServerRole,
         SettingsIssue,
+        SignIn,
     } from '$lib/api'
     import Button from '$lib/design/Button.svelte'
     import Notice from '$lib/design/Notice.svelte'
@@ -18,7 +19,15 @@
     import { errorMessage } from '$lib/features/workspace/workspace'
     import { t } from '$lib/i18n'
     import ServerForm from './ServerForm.svelte'
-    import { domainOf, serverOf, switchIncomingProtocol, switchSecurity, withServer } from './setup'
+    import {
+        domainOf,
+        serverOf,
+        switchIncomingProtocol,
+        switchSecurity,
+        usesSignIn,
+        withAuth,
+        withServer,
+    } from './setup'
 
     type Props = {
         api: Api
@@ -46,6 +55,8 @@
     // Problems found before connecting; any edit clears them.
     let issues = $state<SettingsIssue[]>([])
     let connectError = $state<MailError | null>(null)
+    // The sign-in the user is finishing in the browser right now.
+    let waiting = $state<SignIn | null>(null)
 
     const run = async (action: () => Promise<void>) => {
         busy = true
@@ -118,25 +129,77 @@
         update(await switchSecurity(api, current, role, security))
     })
 
-    const connect = (current: AccountSettings) => run(async () => {
+    // Looks for problems that need no network; false when one of them blocks.
+    const check = async (current: AccountSettings): Promise<boolean> => {
         connectError = null
         issues = await api.validateAccountSettings(current)
         if (issues.some((issue) => issue.blocking)) {
             editing = true
 
+            return false
+        }
+
+        return true
+    }
+
+    const explain = (caught: unknown) => {
+        connectError = toMailError(caught)
+        // The fix is almost always in the settings, so put them in reach.
+        if (connectError.kind !== 'Auth' && connectError.kind !== 'SignIn') {
+            editing = true
+        }
+    }
+
+    const connect = (current: AccountSettings) => run(async () => {
+        if (!await check(current)) {
             return
         }
 
         try {
             onadded(await api.addAccount(current, password))
         } catch (caught) {
-            connectError = toMailError(caught)
-            // The fix is almost always in the settings, so put them in reach.
-            if (connectError.kind !== 'Auth') {
-                editing = true
-            }
+            explain(caught)
         }
     })
+
+    const signIn = (current: AccountSettings) => run(async () => {
+        if (!await check(current)) {
+            return
+        }
+
+        let started: SignIn | null = null
+        try {
+            started = await api.beginSignIn(current)
+            waiting = started
+            await api.openExternal(started.url)
+            onadded(await api.finishSignIn(started.id))
+        } catch (caught) {
+            // A sign-in the user cancelled here needs no explanation.
+            if (started === null || waiting !== null) {
+                explain(caught)
+            }
+            if (started !== null) {
+                // Nothing may keep listening for a browser that never comes.
+                await api.cancelSignIn(started.id).catch(() => undefined)
+            }
+        } finally {
+            waiting = null
+        }
+    })
+
+    const cancelSignIn = () => {
+        const started = waiting
+        if (started === null) {
+            return
+        }
+
+        waiting = null
+        api.cancelSignIn(started.id).catch(() => undefined)
+    }
+
+    const reopen = (started: SignIn) => {
+        api.openExternal(started.url).catch(() => undefined)
+    }
 </script>
 
 {#if detection === null || settings === null}
@@ -176,7 +239,12 @@
 {:else}
     {@const current = settings}
     {@const found = detection}
-    <form class="stack" novalidate onsubmit={(event) => submit(event, () => connect(current))}>
+    {@const signingIn = usesSignIn(current)}
+    <form
+        class="stack"
+        novalidate
+        onsubmit={(event) => submit(event, () => signingIn ? signIn(current) : connect(current))}
+    >
         <div>
             {#if manual}
                 <h1>{t('setup.manualTitle')}</h1>
@@ -190,8 +258,10 @@
             {/if}
         </div>
 
-        {#if current.incoming.auth === 'OAuth2' || current.outgoing.auth === 'OAuth2'}
+        {#if signingIn && !found.signInAvailable}
             <Notice kind="warning">{t('setup.oauthUnavailable')}</Notice>
+        {:else if signingIn}
+            <Notice>{t('setup.signInHint')}</Notice>
         {:else if found.passwordKind === 'AppPassword'}
             <Notice>{t('setup.appPassword')}</Notice>
         {/if}
@@ -206,16 +276,30 @@
             oninput={(displayName) => update({ ...current, displayName })}
         />
 
-        <div>
-            <TextField
-                label={t('setup.password')}
-                type="password"
-                value={password}
-                invalid={connectError !== null && connectError.kind === 'Auth'}
-                oninput={typePassword}
-            />
-            <p class="hint">{t('setup.passwordHint')}</p>
-        </div>
+        {#if signingIn}
+            <!-- The manual way stays one step away (AGENTS.md 2.2). -->
+            <div>
+                <Button variant="link" disabled={busy} onclick={() => update(withAuth(current, 'Password'))}>
+                    {t('setup.usePassword')}
+                </Button>
+            </div>
+        {:else}
+            <div>
+                <TextField
+                    label={t('setup.password')}
+                    type="password"
+                    value={password}
+                    invalid={connectError !== null && connectError.kind === 'Auth'}
+                    oninput={typePassword}
+                />
+                <p class="hint">{t('setup.passwordHint')}</p>
+                {#if found.signInAvailable}
+                    <Button variant="link" disabled={busy} onclick={() => update(withAuth(current, 'OAuth2'))}>
+                        {t('setup.useSignIn')}
+                    </Button>
+                {/if}
+            </div>
+        {/if}
 
         {#if editing}
             {#each roles as role (role)}
@@ -223,7 +307,7 @@
                     {role}
                     server={serverOf(current, role)}
                     {issues}
-                    onchange={(server) => update(withServer(current, role, server))}
+                    onchange={(server) => update(withAuth(withServer(current, role, server), server.auth))}
                     onprotocol={(protocol) => changeProtocol(current, found, protocol)}
                     onsecurity={(security) => changeSecurity(current, role, security)}
                 />
@@ -252,15 +336,36 @@
         {#if failed}
             <Notice kind="danger">{t('setup.failed')}</Notice>
         {/if}
+        {#if waiting !== null}
+            {@const started = waiting}
+            <Notice>
+                {t('setup.signInWaiting')}
+                <Button variant="link" onclick={() => reopen(started)}>{t('setup.signInReopen')}</Button>
+            </Notice>
+        {/if}
 
         <div class="actions">
-            <Button variant="link" disabled={busy} onclick={back}>{t('setup.back')}</Button>
+            {#if waiting !== null}
+                <Button variant="link" onclick={cancelSignIn}>{t('setup.signInCancel')}</Button>
+            {:else}
+                <Button variant="link" disabled={busy} onclick={back}>{t('setup.back')}</Button>
+            {/if}
             <span class="spacer"></span>
             <Button disabled={busy} onclick={toggleEditing}>
                 {editing ? t('setup.hide') : t('setup.edit')}
             </Button>
             <Button variant="accent" type="submit" disabled={busy}>
-                {busy ? t('setup.connecting') : t('setup.connect')}
+                {#if waiting !== null}
+                    {t('setup.waiting')}
+                {:else if busy}
+                    {t('setup.connecting')}
+                {:else if !signingIn}
+                    {t('setup.connect')}
+                {:else if found.provider !== null}
+                    {t('setup.signIn', { provider: found.provider })}
+                {:else}
+                    {t('setup.signInGeneric')}
+                {/if}
             </Button>
         </div>
     </form>

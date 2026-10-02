@@ -1,5 +1,5 @@
 // `pnpm test:app`: starts the real shell with the built UI and a throwaway
-// data folder, and checks that the page reaches the Rust core.
+// data folder, and checks that the page and its forms reach the Rust core.
 // Needs a display (on a headless machine: `xvfb-run -a pnpm test:app`).
 
 import assert from 'node:assert/strict'
@@ -17,8 +17,11 @@ const dataDirectory = await mkdtemp(path.join(tmpdir(), 'mailclient-smoke-'))
 const env = { ...shellEnv(), MAILCLIENT_DATA_DIR: dataDirectory }
 delete env.MAILCLIENT_DEV_URL
 
+// Its own browser profile too: with the user's, a running app would hold
+// the single-instance lock and this one would quit at once.
+const profile = '--user-data-dir=' + path.join(dataDirectory, 'profile')
 // A Wayland session without its socket (xvfb-run) has to be told to use X11.
-const args = process.env.WAYLAND_DISPLAY === undefined ? ['--ozone-platform=x11', '.'] : ['.']
+const args = process.env.WAYLAND_DISPLAY === undefined ? [profile, '--ozone-platform=x11', '.'] : [profile, '.']
 
 const app = await _electron.launch({ args, env })
 try {
@@ -55,6 +58,17 @@ try {
         document.body.append(frame)
     }))
     assert.equal(framed, 'framed')
+
+    // The setup form hands the core its own reactive state; that has to get
+    // through the shell. The domain cannot exist, so the answer is the
+    // core's own "could not be reached", not a failure to ask.
+    await page.locator('input[type="email"]').fill('smoke@mailclient.invalid')
+    await page.locator('button[type="submit"]').click()
+    await page.locator('input[type="password"]').fill('not-a-password')
+    await page.locator('button[type="submit"]').click()
+    const alert = page.getByRole('alert')
+    await alert.waitFor({ timeout: 30000 })
+    assert.match(await alert.innerText(), /imap\.mailclient\.invalid/)
 
     assert.deepEqual(violations, [])
     console.log('desktop smoke test passed')

@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from 'vitest'
 import { page } from 'vitest/browser'
 import { render } from 'vitest-browser-svelte'
+import type { DetectResult } from '$lib/api'
 import AccountSetup from './AccountSetup.svelte'
-import { createFakeApi, emptyState, fakePassword } from './fakeApi'
+import { createFakeApi, emptyState, fakePassword, fakeSignInUrl, gmailSignInDetection } from './fakeApi'
 
 const typeAddress = async (email: string) => {
     await page.getByLabelText('Email address').fill(email)
@@ -71,6 +72,100 @@ describe('AccountSetup', () => {
 
         await expect.element(page.getByRole('alert')).toHaveTextContent('Outgoing mail: The server couldn\'t be reached')
         await expect.element(page.getByLabelText('Server').first()).toHaveValue('imap.gmail.com')
+    })
+
+    describe('on the provider\'s own page', () => {
+        // A build that can sign in on Google's page.
+        const detectAccountSettings = async (): Promise<DetectResult> => {
+            return { ok: true, detection: gmailSignInDetection }
+        }
+
+        const reachSignIn = async () => {
+            await typeAddress('john@gmail.com')
+            await page.getByRole('button', { name: 'Continue' }).click()
+        }
+
+        it('signs in with one click and asks for no password', async () => {
+            const { state, onadded } = start({ detectAccountSettings })
+
+            await reachSignIn()
+            await expect.element(page.getByLabelText('Password', { exact: true })).not.toBeInTheDocument()
+            await expect.element(page.getByText('This provider needs an app password')).not.toBeInTheDocument()
+            await page.getByRole('button', { name: 'Sign in with Gmail' }).click()
+
+            await vi.waitFor(() => expect(onadded).toHaveBeenCalledOnce())
+            expect(state.opened).toEqual([fakeSignInUrl])
+            expect(state.accounts.map((account) => account.settings.incoming.auth)).toEqual(['OAuth2'])
+        })
+
+        it('waits for the browser and can be cancelled without an error', async () => {
+            let giveUp = (): void => undefined
+            const cancelSignIn = vi.fn(async () => giveUp())
+            const { state, onadded } = start({
+                detectAccountSettings,
+                // The user never comes back from the browser.
+                finishSignIn: () => new Promise((_resolve, reject) => {
+                    giveUp = () => reject({ kind: 'SignIn', server: null, detail: 'the sign-in was cancelled' })
+                }),
+                cancelSignIn,
+            })
+
+            await reachSignIn()
+            await page.getByRole('button', { name: 'Sign in with Gmail' }).click()
+            await expect.element(page.getByText('Finish signing in in your browser')).toBeInTheDocument()
+            await page.getByRole('button', { name: 'Open the page again' }).click()
+            await page.getByRole('button', { name: 'Cancel sign-in' }).click()
+
+            await expect.element(page.getByRole('button', { name: 'Sign in with Gmail' })).toBeEnabled()
+            await expect.element(page.getByRole('alert')).not.toBeInTheDocument()
+            expect(cancelSignIn).toHaveBeenCalledWith(1)
+            expect(state.opened).toEqual([fakeSignInUrl, fakeSignInUrl])
+            expect(onadded).not.toHaveBeenCalled()
+        })
+
+        it('explains a sign-in the provider did not complete', async () => {
+            const { onadded } = start({
+                detectAccountSettings,
+                finishSignIn: async () => {
+                    throw { kind: 'SignIn', server: null, detail: 'the provider answered: access_denied' }
+                },
+            })
+
+            await reachSignIn()
+            await page.getByRole('button', { name: 'Sign in with Gmail' }).click()
+
+            await expect.element(page.getByRole('alert')).toHaveTextContent('The sign-in with your provider wasn\'t completed')
+            await expect.element(page.getByRole('alert')).toHaveTextContent('access_denied')
+            expect(onadded).not.toHaveBeenCalled()
+        })
+
+        it('keeps the app password one click away', async () => {
+            const { state, onadded } = start({ detectAccountSettings })
+
+            await reachSignIn()
+            await page.getByRole('button', { name: 'Use a password instead' }).click()
+            await expect.element(page.getByText('This provider needs an app password')).toBeInTheDocument()
+            await page.getByLabelText('Password', { exact: true }).fill(fakePassword)
+            await page.getByRole('button', { name: 'Connect' }).click()
+
+            await vi.waitFor(() => expect(onadded).toHaveBeenCalledOnce())
+            expect(state.opened).toEqual([])
+            expect(state.accounts.map((account) => account.settings.outgoing.auth)).toEqual(['Password'])
+        })
+
+        it('says so when the app cannot open the provider\'s page, and still offers a password', async () => {
+            start({
+                detectAccountSettings: async () => ({
+                    ok: true,
+                    detection: { ...gmailSignInDetection, provider: 'Outlook', signInAvailable: false },
+                }),
+            })
+
+            await reachSignIn()
+
+            await expect.element(page.getByText('which the app can\'t open for it yet')).toBeInTheDocument()
+            await expect.element(page.getByRole('button', { name: 'Use a password instead' })).toBeInTheDocument()
+        })
     })
 
     it('lets the user edit settings of a known provider', async () => {

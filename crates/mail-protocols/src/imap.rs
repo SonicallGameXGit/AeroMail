@@ -2,10 +2,10 @@ use std::fmt::Debug;
 
 use async_imap::error::Error as ImapError;
 use async_imap::types::{Capability, Fetch, Flag as ImapFlag, Name, NameAttribute};
-use async_imap::{Client, Session};
+use async_imap::{Authenticator, Client, Session};
 use async_trait::async_trait;
 use futures::TryStreamExt;
-use mail_core::account::{Security, ServerSettings};
+use mail_core::account::{AuthMethod, Security, ServerSettings};
 use mail_core::error::{ErrorKind, MailError, MailResult};
 use mail_core::mail::{FolderRole, MessageFlags};
 use mail_core::transport::{Flag, FolderState, IncomingSession, RemoteFolder, RemoteMessage};
@@ -76,7 +76,22 @@ where
     }
 }
 
-pub(crate) async fn connect(server: &ServerSettings, password: &str) -> MailResult<ImapSession> {
+/// The XOAUTH2 sign-in: the address and an access token in one answer.
+struct XOAuth2 {
+    answer: Option<String>,
+}
+
+impl Authenticator for XOAuth2 {
+    type Response = String;
+
+    fn process(&mut self, _challenge: &[u8]) -> String {
+        // A second question is the server's report of a refused token; it
+        // waits for an empty line before saying no.
+        self.answer.take().unwrap_or_default()
+    }
+}
+
+pub(crate) async fn connect(server: &ServerSettings, secret: &str) -> MailResult<ImapSession> {
     let host = server.host.trim();
     let tcp = tls::tcp(host, server.port).await?;
 
@@ -105,15 +120,24 @@ pub(crate) async fn connect(server: &ServerSettings, password: &str) -> MailResu
         }
     };
 
-    let mut session = client
-        .login(&server.username, password)
-        .await
-        .map_err(|(error, _)| match error {
-            ImapError::No(detail) | ImapError::Bad(detail) => {
-                MailError::new(ErrorKind::Auth, detail)
-            }
-            other => imap_error(other),
-        })?;
+    let signed_in = match server.auth {
+        AuthMethod::Password => client.login(&server.username, secret).await,
+        AuthMethod::OAuth2 => {
+            let answer = format!("user={}\x01auth=Bearer {secret}\x01\x01", server.username);
+            client
+                .authenticate(
+                    "XOAUTH2",
+                    XOAuth2 {
+                        answer: Some(answer),
+                    },
+                )
+                .await
+        }
+    };
+    let mut session = signed_in.map_err(|(error, _)| match error {
+        ImapError::No(detail) | ImapError::Bad(detail) => MailError::new(ErrorKind::Auth, detail),
+        other => imap_error(other),
+    })?;
 
     let capabilities = session.capabilities().await.map_err(imap_error)?;
     let has = |name: &str| capabilities.has(&Capability::Atom(name.to_string()));
@@ -410,7 +434,7 @@ impl IncomingSession for ImapSession {
 
 #[cfg(test)]
 mod tests {
-    use mail_core::account::{AuthMethod, Protocol};
+    use mail_core::account::Protocol;
 
     use super::*;
     use crate::fake_server::FakeImap;
@@ -431,6 +455,37 @@ mod tests {
         let server = FakeImap::start().await;
 
         let error = connect(&settings(server.port), "wrong")
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(error.kind, ErrorKind::Auth);
+    }
+
+    fn token_settings(port: u16) -> ServerSettings {
+        ServerSettings {
+            auth: AuthMethod::OAuth2,
+            ..settings(port)
+        }
+    }
+
+    #[tokio::test]
+    async fn signs_in_with_an_access_token() {
+        let server = FakeImap::start().await;
+        let mut session = connect(&token_settings(server.port), "token")
+            .await
+            .unwrap();
+
+        assert!(session.is_alive().await);
+        let commands = server.commands();
+        assert!(commands.iter().any(|sent| sent == "AUTHENTICATE XOAUTH2"));
+        assert!(!commands.iter().any(|sent| sent.starts_with("LOGIN")));
+    }
+
+    #[tokio::test]
+    async fn a_refused_access_token_is_an_auth_error() {
+        let server = FakeImap::start().await;
+
+        let error = connect(&token_settings(server.port), "expired")
             .await
             .err()
             .unwrap();

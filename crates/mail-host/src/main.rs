@@ -11,7 +11,7 @@ use std::sync::Arc;
 use mail_core::error::{ErrorKind, MailError, MailResult};
 use mail_engine::Engine;
 use mail_host::handle_line;
-use mail_protocols::{NetConnector, NetLogos};
+use mail_protocols::{NetConnector, NetLogos, NetSignIn};
 use mail_store::Store;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::mpsc;
@@ -50,6 +50,7 @@ fn build_engine() -> MailResult<Engine> {
         Arc::new(NetConnector),
         Arc::new(secrets::KeychainSecrets),
         Arc::new(NetLogos),
+        Arc::new(NetSignIn),
     ))
 }
 

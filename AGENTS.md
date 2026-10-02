@@ -90,9 +90,9 @@ MailClient/
     Cargo.toml                  Cargo workspace (crates/*), shared lints
     .cargo/config.toml          where the generated TypeScript bindings go
     crates/
-        mail-core/              domain types and rules (incl. which sender logos are acceptable, and `AppSettings`); the traits for servers, keychain and logos; MailError
+        mail-core/              domain types and rules (incl. which sender logos are acceptable, which providers have a sign-in page, and `AppSettings`); the traits for servers, keychain, logos and sign-in; MailError
         mail-autoconfig/        settings detection: built-in provider table, guess for unknown domains
-        mail-protocols/         real IMAP and SMTP behind the core traits (NetConnector); DNS + HTTPS lookup of sender logos (NetLogos)
+        mail-protocols/         real IMAP and SMTP behind the core traits (NetConnector); DNS + HTTPS lookup of sender logos (NetLogos); sign-in on the provider's page (NetSignIn)
         mail-store/             SQLite: accounts, folders, cached messages, settings, looked-up sender logos
         mail-render/            header parsing, HTML sanitising, attachments, composing raw messages
         mail-engine/            the operations the UI calls; owns the store, uses the traits
@@ -100,6 +100,7 @@ MailClient/
     electron/                   thin shell: window, starts the core, save dialog, external links
         icons/
     electron-builder.json       packaging: installers with the core binary next to the app
+    .env.example                what a build can be given (copied to the git-ignored `.env`)
     scripts/                    what `pnpm dev`, `pnpm build` and `pnpm test:app` run
     tests/
         fixtures/               `.eml` samples, one per rendering or parsing bug fixed
@@ -129,9 +130,9 @@ Planned, created when first needed (do not add empty crates or folders):
 
 - **The core is headless.** Everything that is not presentation lives in `crates/`. No crate under `crates/` depends on Electron or on the UI. If logic can be written in the core, it must be.
 - **The shell is thin.** `electron/` opens the window, runs the core and wires native features. No business logic, and nothing in TypeScript that could live in Rust.
-- **One way from the UI to the core.** The page calls `window.mailclient` (exposed by `electron/preload.cts`), the main process passes the command to `mailclient-core` as one JSON line on its stdin and returns the answer line: `{ id, ok, value }` or `{ id, ok, error }`. No local port is opened. A new operation is a new arm in `mail-host::dispatch` plus a method in `src/lib/api`.
+- **One way from the UI to the core.** The page calls `window.mailclient` (exposed by `electron/preload.cts`), the main process passes the command to `mailclient-core` as one JSON line on its stdin and returns the answer line: `{ id, ok, value }` or `{ id, ok, error }`. No local port is opened for this (the only listener the app ever has is the short-lived sign-in one in 5.3, which serves the browser, not the UI). A new operation is a new arm in `mail-host::dispatch` plus a method in `src/lib/api`.
 - **The UI talks to the core through `src/lib/api` only.** Components never touch `window.mailclient` directly. This is what keeps a web build cheap.
-- **I/O behind traits.** Mail servers, the keychain and the sender-logo lookup are traits in `mail-core::transport`, with real and fake implementations, so the engine is testable without a network. Storage is not behind a trait: it is always SQLite, and tests use it in memory.
+- **I/O behind traits.** Mail servers, the keychain, the sender-logo lookup and the provider sign-in are traits in `mail-core::transport`, with real and fake implementations, so the engine is testable without a network. Storage is not behind a trait: it is always SQLite, and tests use it in memory.
 - **One error type crosses boundaries**: `MailError { kind, server, detail }`. The UI words the message from `kind` and `server`; `detail` is the technical line. Add an `ErrorKind` rather than encoding meaning in `detail`.
 - **Database ids are never reused** (`AUTOINCREMENT`): the UI and the keychain hold ids.
 - **Types cross the boundary once.** Rust types that reach the UI derive `ts_rs::TS` with `#[ts(export)]`; `cargo test` writes them to `src/lib/api/generated`. Commit the generated files, never edit them, and re-export them from `src/lib/api/index.ts`.
@@ -142,12 +143,13 @@ Planned, created when first needed (do not add empty crates or folders):
 
 ### 5.3 Security and privacy
 
-- Credentials and OAuth tokens only in the OS keychain (service `app.mailclient.desktop`, key `account-<id>`). Never in SQLite, logs, config files, error messages or crash reports.
+- Credentials and OAuth tokens only in the OS keychain (service `app.mailclient.desktop`, key `account-<id>`: the password, or the refresh token of an account that signs in on its provider's page). Never in SQLite, logs, config files, error messages or crash reports. Access tokens live only in the core's memory.
+- **Sign-in on the provider's page** (OAuth2, Google so far) follows the rules for installed apps, and all of these must stay: the page opens in the user's own browser, never in a window of the app, so the app never sees the password; the provider answers to a listener on `127.0.0.1` only, on a port picked by the system, which exists only while a sign-in waits (five minutes at most, one at a time) and accepts nothing but the answer carrying this sign-in's random `state`; the code is traded in with PKCE (S256); tokens are requested over HTTPS with the app's usual certificate checks. The provider is chosen by the mail server's host name, from the table in `mail-core::oauth`, never from anything a server or a message says. The client id and "client secret" identify the app, not the user; they are given to the build (see 6) and are not in the repository.
 - Message HTML is untrusted input, with two layers that must both stay: `mail-render` sanitises it (and strips remote images unless allowed), and the UI shows it in an `<iframe sandbox="allow-same-origin">` (never `allow-scripts`) whose own content policy allows only inline styles and images. Remote content is blocked by default with a visible per-message opt-in; the user can allow remote images for every message in the settings (`AppSettings.remote_images`, off by default, worded with what it gives away), and the core, not the UI, decides what a message is rendered with. Links are caught from outside the frame and opened in the system browser, `http(s)` and `mailto` only.
 - The window runs with `contextIsolation`, `sandbox` and no Node integration; it cannot navigate away or open windows. The page's own policy (`csp` in `vite.config.ts`) allows no remote scripts. The shell opens only `http(s)` and `mailto` links, checked again in the main process.
 - TLS certificates are verified against the bundled Mozilla roots (`webpki-roots`); there is no "accept anyway" path yet.
 - TLS is required by default; plaintext or invalid certificates need an explicit, clearly worded user decision.
-- No telemetry and no network calls to anything but the user's mail providers, the documented autoconfig lookups and the sender-picture lookup below, unless the owner asks for it and the user opts in.
+- No telemetry and no network calls to anything but the user's mail providers (their sign-in and token addresses included), the documented autoconfig lookups and the sender-picture lookup below, unless the owner asks for it and the user opts in.
 - **Sender pictures** (BIMI) are on by default and can be turned off in the settings; turned off, nothing is looked up. For a sender's domain (and up to two parent domains) the core asks DNS for `default._bimi.<domain>` and `_dmarc.<domain>`, then downloads the logo over HTTPS. Nothing about the user or the message is sent, but the logo's host sees the user's IP address. Everything in the record is the sender's and untrusted, so all of these must stay: a logo is used only if the domain's DMARC policy refuses forged mail (`quarantine` / `reject`); only plain `https` to a public host name, default port, no redirects, no proxy; the host's addresses are resolved first, private / local ones are dropped and the download is pinned to the rest; at most 512 KB, SVG only; shown only through `<img>` as a `data:` address (never inlined into the page), where it cannot run scripts or load anything. Answers, including "no logo", are cached per domain for 7 days. The certificate that proves a logo belongs to the brand (VMC) is **not** checked yet, so a look-alike domain with its own DMARC policy can publish someone else's logo: a picture is decoration, never a sign that a message is genuine.
 - Never log message bodies or addresses at default log level.
 
@@ -158,11 +160,11 @@ Code is not done until it is tested. The goal is to verify behaviour in small pa
 - **Rust unit tests** next to the code for every parser, state machine and decision function.
 - **Engine tests** (`mail-engine/src/tests.rs`) run every operation against the in-memory fakes in `testing.rs` and a real in-memory SQLite. New engine behaviour gets a test here first.
 - **Protocol tests** (`mail-protocols`) run the real IMAP and SMTP clients against scripted servers on local sockets (`fake_server.rs`). No container needed.
-- **Opt-in tests** (`#[ignore]`): `cargo test -p mail-protocols -- --ignored` checks TLS and STARTTLS against real public servers with a bogus login, and the sender-logo lookup against real domains; `cargo test -p mail-host -- --ignored` round-trips through the real OS keychain. Run them after touching TLS, connection or keychain code.
+- **Opt-in tests** (`#[ignore]`): `cargo test -p mail-protocols -- --ignored` checks TLS and STARTTLS against real public servers with a bogus login and a bogus access token, and the sender-logo lookup against real domains; `cargo test -p mail-host -- --ignored` round-trips through the real OS keychain. Run them after touching TLS, connection or keychain code.
 - **Fixtures**: real-world-shaped `.eml` samples (odd charsets, nested multipart, broken HTML, huge attachments) under `tests/fixtures`. Every rendering or parsing bug fixed gets a fixture.
 - **Autoconfig**: table-driven tests per provider, including the failure -> manual fallback path.
 - **Frontend**: Vitest. `*.spec.ts` are plain unit tests (Node); `*.svelte.spec.ts` are component tests that run in a real headless Chromium with a fake `Api`. One-time setup: `pnpm exec playwright install chromium`.
-- **Shell**: `pnpm test:app` starts the real Electron app with the built UI and an empty throwaway data folder, and checks that the page reaches the core and that its content policy lets the message frame load. It needs a display (`xvfb-run -a pnpm test:app` without one). Run it after touching `electron/`, `mail-host` or the policy.
+- **Shell**: `pnpm test:app` starts the real Electron app with the built UI and an empty throwaway data folder, and checks that the page and the setup form reach the core and that its content policy lets the message frame load. It uses its own browser profile, so it also runs while the app is open. It needs a display (`xvfb-run -a pnpm test:app` without one). Run it after touching `electron/`, `mail-host` or the policy.
 - A bug fix comes with a test that fails before the fix.
 - Never make a test pass by weakening or deleting it. If a test is wrong, say so and explain.
 
@@ -178,6 +180,8 @@ pnpm test
 ```
 
 Running the app: `pnpm dev` (builds the core and the shell, then opens the app with hot reload for the UI). Installer for the current system: `pnpm build`, written to `release/`. These are the only two ways to run and build; do not add variants.
+
+Signing in with Google needs the owner's OAuth client (Google Cloud console, client type "Desktop app", scope `https://mail.google.com/`): put `MAILCLIENT_GOOGLE_CLIENT_ID` and `MAILCLIENT_GOOGLE_CLIENT_SECRET` into `.env` (copy `.env.example`; `.env` is never committed). `scripts/run.js` loads it for `pnpm dev`, `pnpm build` and `pnpm test:app`, a variable set in the terminal wins, and the values are compiled into the core. A plain `cargo` command does not read `.env`. A build made without them still works: it suggests an app password for Gmail, as before.
 
 ## 7. Code style
 
@@ -300,7 +304,7 @@ Each must work on Windows, Linux and macOS, behind one interface (5.2):
 
 Works today (IMAP + SMTP, password sign-in):
 
-- Account setup: detection, manual form, real sign-in to both servers, password in the keychain; several accounts; removing an account.
+- Account setup: detection, manual form, real sign-in to both servers, password in the keychain; several accounts; removing an account. Gmail (and custom domains on Google's servers) signs in on Google's own page with one click, in a build given a client id (6); an app password stays one click away.
 - Workspace layout: account menu at the top right (switch, add, open the settings); folders of the open account on the left with New message above them; message list; reader with the actions of the open message above it, grouped as answer / put away / mark. Panes are resizable, the folder list down to an icon rail.
 - Folders with roles and unread counts; message list (newest 50, "load older"); cached for offline reading; refresh on demand and every 2 minutes for the open folder.
 - Sender pictures: a brand's own logo (BIMI) under the same glass as the initials, cached, with a switch in the settings.
@@ -311,7 +315,7 @@ Works today (IMAP + SMTP, password sign-in):
 
 Not built yet, roughly in this order:
 
-1. **OAuth2** for Gmail and Outlook (Outlook.com accepts nothing else; Gmail works with an app password meanwhile). Needs client ids registered by the owner.
+1. **OAuth2** for Outlook (Outlook.com accepts nothing else): an entry in `mail-core::oauth` and a client id registered by the owner. Signing in again for an account whose permission ran out or was taken back (today: remove the account and add it again). Google's verification of the app (until then Google shows an "unverified app" warning, allows only listed test users and ends each permission after 7 days).
 2. **POP3** (the form offers it; connecting answers "not available yet").
 3. Search, threading, unified inbox, multi-select and bulk actions, undo, drafts, signatures.
 4. Composer: attachments, rich text. Marking the original as answered after a reply.
@@ -361,3 +365,12 @@ Newest last. One line per decision: date, decision, reason.
 - 2026-10-02 - Settings are one value, `AppSettings`, read and written whole (`settings` / `set_settings`), replacing the two sender-picture commands; in SQLite each field stays its own `settings` row holding "on" / "off", a missing row meaning the default. Reason: a new switch is a field, not two more commands, and stored choices keep working.
 - 2026-10-02 - "Always show remote images" exists as a setting, off by default; the per-message opt-in stays for everyone who leaves it off. Reason: owner's request; section 2.2 - the user decides, knowing what it gives away.
 - 2026-10-02 - Removing an account moved from a bare trash icon in the account menu to the settings window, as a labelled button next to each account. Reason: the owner did not find it.
+- 2026-10-02 - Gmail signs in on Google's page (OAuth2): system browser, answer to a listener on 127.0.0.1 with a random port, PKCE; all of it in the core behind `SignInFlow`, the shell only opens the address. Reason: Google refuses sign-in inside an app's own web view; this is the flow it documents for installed apps. Replaces "Gmail is listed with password sign-in" above.
+- 2026-10-02 - The app password stays as the manual path: "Use a password instead" on the setup screen, and what detection suggests by itself in a build without a client id. Reason: section 2.2.
+- 2026-10-02 - Google's client id and secret come from the build's environment (`MAILCLIENT_GOOGLE_CLIENT_ID`, `MAILCLIENT_GOOGLE_CLIENT_SECRET`), kept in a git-ignored `.env` that the scripts load, not from the repository. Reason: they belong to the owner's Google project; a desktop app cannot keep them secret, but they need not be published either.
+- 2026-10-02 - The provider to sign in with is found by the mail server's host name (`imap.gmail.com`, ...), not by the address's domain. Reason: custom domains hosted by Google work through the manual form.
+- 2026-10-02 - For an account that signs in on its provider's page, the keychain entry holds the refresh token; access tokens are kept in memory and renewed a minute before they run out. Both servers of an account sign in the same way (`IssueKind::MixedAuth`). Reason: one secret per account, as with passwords.
+- 2026-10-02 - Adding such an account is two commands, `begin_sign_in` (gives the address to open) and `finish_sign_in` (answers when the user is done), plus `cancel_sign_in`. Reason: the core cannot open a browser, and one request has one answer.
+- 2026-10-02 - The page the browser shows after signing in is plain English text sent by the core, outside `t()`. Reason: it is not part of the UI; move it when a second language exists.
+- 2026-10-02 - `ErrorKind::SignIn` added for a sign-in that was not completed or a permission that is no longer valid. `reqwest` gains its `form` feature; `ring` and `base64` (already in the tree) became direct dependencies of `mail-protocols` for PKCE.
+- 2026-10-02 - `src/lib/api` turns the parameters of every command into plain data (a JSON round trip) before handing them to the shell. Reason: components pass Svelte `$state`, which is a proxy that Electron cannot copy ("An object could not be cloned"); no account could be added since the move to Electron. `pnpm test:app` now submits the setup form to catch this.

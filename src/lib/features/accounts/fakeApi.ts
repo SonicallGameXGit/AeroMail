@@ -15,11 +15,13 @@ import type {
     OutgoingMessage,
     SettingsIssue,
 } from '$lib/api'
+import { withAuth } from './setup'
 
 export const gmailDetection: Detection = {
     source: 'BuiltIn',
     provider: 'Gmail',
     passwordKind: 'AppPassword',
+    signInAvailable: false,
     settings: {
         email: 'john@gmail.com',
         displayName: '',
@@ -50,10 +52,18 @@ export const gmailDetection: Detection = {
     },
 }
 
+// Gmail in a build that can sign in on Google's own page.
+export const gmailSignInDetection: Detection = {
+    ...gmailDetection,
+    signInAvailable: true,
+    settings: withAuth(gmailDetection.settings, 'OAuth2'),
+}
+
 export const guessDetection: Detection = {
     source: 'Guess',
     provider: null,
     passwordKind: 'Account',
+    signInAvailable: false,
     settings: {
         email: 'me@corp.example',
         displayName: '',
@@ -78,6 +88,7 @@ export const guessDetection: Detection = {
 }
 
 export const fakePassword = 'secret'
+export const fakeSignInUrl = 'https://accounts.example.com/sign-in'
 
 export type FakeState = {
     accounts: Account[]
@@ -200,6 +211,16 @@ export const createFakeApi = (state: FakeState = emptyState(), overrides: Partia
             .map((candidate) => counted(state, candidate))
     }
 
+    const store = (settings: AccountSettings): Account => {
+        const account = { id: state.accounts.length + 1, settings }
+        state.accounts = [...state.accounts, account]
+        state.folders = [...state.folders, folder(100 + account.id, account.id, 'INBOX', 'Inbox')]
+
+        return account
+    }
+    // Sign-ins that were begun, by their number.
+    const signIns: AccountSettings[] = []
+
     const listMessages = async (folderId: number): Promise<MessageSummary[]> => {
         return state.messages
             .filter((candidate) => candidate.folderId === folderId)
@@ -244,12 +265,24 @@ export const createFakeApi = (state: FakeState = emptyState(), overrides: Partia
             if (password !== fakePassword) {
                 throw fail('Auth', 'invalid credentials', 'Incoming')
             }
-            const account = { id: state.accounts.length + 1, settings }
-            state.accounts = [...state.accounts, account]
-            state.folders = [...state.folders, folder(100 + account.id, account.id, 'INBOX', 'Inbox')]
 
-            return account
+            return store(settings)
         },
+        beginSignIn: async (settings) => {
+            signIns.push(settings)
+
+            return { id: signIns.length, url: fakeSignInUrl }
+        },
+        // The user approves in the browser at once.
+        finishSignIn: async (signInId) => {
+            const settings = signIns[signInId - 1]
+            if (settings === undefined) {
+                throw fail('SignIn', 'this sign-in was given up')
+            }
+
+            return store(settings)
+        },
+        cancelSignIn: async () => undefined,
         removeAccount: async (accountId) => {
             state.accounts = state.accounts.filter((candidate) => candidate.id !== accountId)
         },

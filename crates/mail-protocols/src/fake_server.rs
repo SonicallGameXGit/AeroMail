@@ -3,11 +3,21 @@
 
 use std::sync::{Arc, Mutex};
 
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 
 // base64 of "\0me@example.com\0secret", the AUTH PLAIN form of the test login.
 const SMTP_PLAIN_OK: &str = "AG1lQGV4YW1wbGUuY29tAHNlY3JldA==";
+
+/// The XOAUTH2 answer of the test login with the access token "token".
+fn xoauth2_ok() -> String {
+    STANDARD.encode("user=me@example.com\x01auth=Bearer token\x01\x01")
+}
+
+// What a server says about a refused token, before it says no.
+const XOAUTH2_REFUSED: &str = "eyJzdGF0dXMiOiI0MDAifQ==";
 
 const FIRST: &str = "Subject: First\r\n\r\nBody of the first\r\n";
 
@@ -73,6 +83,17 @@ async fn serve_imap(stream: TcpStream, log: Arc<Mutex<ImapLog>>) {
 
         if upper.starts_with("LOGIN") {
             if !command.contains("\"secret\"") {
+                status = "NO [AUTHENTICATIONFAILED] invalid credentials".to_string();
+            }
+        } else if upper.starts_with("AUTHENTICATE XOAUTH2") {
+            write.write_all(b"+ \r\n").await.unwrap();
+            let mut answer = String::new();
+            lines.read_line(&mut answer).await.unwrap();
+            if answer.trim_end() != xoauth2_ok() {
+                let report = format!("+ {XOAUTH2_REFUSED}\r\n");
+                write.write_all(report.as_bytes()).await.unwrap();
+                let mut empty = String::new();
+                lines.read_line(&mut empty).await.unwrap();
                 status = "NO [AUTHENTICATIONFAILED] invalid credentials".to_string();
             }
         } else if upper.starts_with("CAPABILITY") {
@@ -190,7 +211,13 @@ async fn serve_smtp(stream: TcpStream, received: Arc<Mutex<ReceivedMail>>) {
         let line = line.trim_end();
         let upper = line.to_uppercase();
         let answer = if upper.starts_with("EHLO") {
-            "250-fake\r\n250 AUTH PLAIN\r\n".to_string()
+            "250-fake\r\n250 AUTH PLAIN XOAUTH2\r\n".to_string()
+        } else if upper.starts_with("AUTH XOAUTH2") {
+            if line.ends_with(&xoauth2_ok()) {
+                "235 welcome\r\n".to_string()
+            } else {
+                format!("334 {XOAUTH2_REFUSED}\r\n")
+            }
         } else if upper.starts_with("AUTH PLAIN") {
             if line.ends_with(SMTP_PLAIN_OK) {
                 "235 welcome\r\n".to_string()

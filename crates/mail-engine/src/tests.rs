@@ -9,7 +9,8 @@ use mail_core::transport::Flag;
 use mail_store::Store;
 
 use crate::testing::{
-    FakeConnector, FakeLogos, FakeSecrets, LOGO, PASSWORD, Remote, SharedRemote, settings,
+    FakeConnector, FakeLogos, FakeSecrets, FakeSignIn, LOGO, PASSWORD, REFRESH_TOKEN, Remote,
+    SIGN_IN_URL, SharedRemote, settings, sign_in_settings,
 };
 use crate::{Engine, LOGO_TTL, PAGE, unix_now};
 
@@ -18,6 +19,7 @@ struct World {
     remote: SharedRemote,
     secrets: Arc<FakeSecrets>,
     logos: Arc<FakeLogos>,
+    sign_in: Arc<FakeSignIn>,
 }
 
 fn world() -> World {
@@ -27,11 +29,13 @@ fn world() -> World {
         remote: Arc::clone(&remote),
     });
     let logos = Arc::new(FakeLogos::default());
+    let sign_in = Arc::new(FakeSignIn::new(Arc::clone(&remote)));
     let engine = Engine::new(
         Store::open_in_memory().unwrap(),
         connector,
         secrets.clone(),
         logos.clone(),
+        sign_in.clone(),
     );
 
     World {
@@ -39,7 +43,32 @@ fn world() -> World {
         remote,
         secrets,
         logos,
+        sign_in,
     }
+}
+
+/// An account added by signing in on the provider's page, the user approving.
+async fn with_signed_in_account() -> (World, Account) {
+    let world = world();
+    let started = world
+        .engine
+        .begin_sign_in(sign_in_settings())
+        .await
+        .unwrap();
+    world.sign_in.approve();
+    let account = world.engine.finish_sign_in(started.id).await.unwrap();
+
+    (world, account)
+}
+
+fn kept_secret(world: &World, account: &Account) -> Option<String> {
+    world
+        .secrets
+        .values
+        .lock()
+        .unwrap()
+        .get(&format!("account-{}", account.id))
+        .cloned()
 }
 
 async fn with_account() -> (World, Account) {
@@ -200,6 +229,270 @@ async fn removing_an_account_forgets_everything_local_but_leaves_the_server_alon
     assert_eq!(world.engine.list_accounts().unwrap(), Vec::new());
     assert!(world.secrets.values.lock().unwrap().is_empty());
     assert_eq!(world.remote.lock().unwrap().uids("INBOX").len(), 1);
+}
+
+// Signing in on the provider's page
+
+#[tokio::test]
+async fn signing_in_adds_the_account_and_keeps_only_the_lasting_token() {
+    let world = world();
+
+    let started = world
+        .engine
+        .begin_sign_in(sign_in_settings())
+        .await
+        .unwrap();
+    assert_eq!(started.url, SIGN_IN_URL);
+    // Nothing exists until the user is done in the browser.
+    assert_eq!(world.engine.list_accounts().unwrap(), Vec::new());
+
+    world.sign_in.approve();
+    let account = world.engine.finish_sign_in(started.id).await.unwrap();
+
+    assert_eq!(world.engine.list_accounts().unwrap(), vec![account.clone()]);
+    assert_eq!(
+        *world.sign_in.begun.lock().unwrap(),
+        vec![("imap.example.com".to_string(), "me@example.com".to_string())],
+    );
+    assert_eq!(
+        kept_secret(&world, &account).as_deref(),
+        Some(REFRESH_TOKEN)
+    );
+    // Both servers were opened with the access token, never the lasting one.
+    assert_eq!(
+        world.remote.lock().unwrap().secrets_used,
+        vec!["access-1".to_string(), "access-1".to_string()],
+    );
+    assert_eq!(folder(&world, &account, FolderRole::Inbox).path, "INBOX");
+}
+
+#[tokio::test]
+async fn a_sign_in_the_user_refuses_adds_nothing() {
+    let world = world();
+    let started = world
+        .engine
+        .begin_sign_in(sign_in_settings())
+        .await
+        .unwrap();
+
+    world.sign_in.refuse();
+    let error = world.engine.finish_sign_in(started.id).await.unwrap_err();
+
+    assert_eq!(error.kind, ErrorKind::SignIn);
+    assert_eq!(world.engine.list_accounts().unwrap(), Vec::new());
+    assert!(world.secrets.values.lock().unwrap().is_empty());
+    assert_eq!(world.remote.lock().unwrap().connections, 0);
+}
+
+#[tokio::test]
+async fn a_cancelled_sign_in_stops_waiting_and_adds_nothing() {
+    let world = world();
+    let started = world
+        .engine
+        .begin_sign_in(sign_in_settings())
+        .await
+        .unwrap();
+
+    // The user never comes back from the browser.
+    let (finished, cancelled) = tokio::join!(world.engine.finish_sign_in(started.id), async {
+        world.engine.cancel_sign_in(started.id)
+    });
+
+    cancelled.unwrap();
+    assert_eq!(finished.unwrap_err().kind, ErrorKind::SignIn);
+    assert_eq!(world.engine.list_accounts().unwrap(), Vec::new());
+    // Cancelling again, or something that never existed, is not an error.
+    world.engine.cancel_sign_in(started.id).unwrap();
+    world.engine.cancel_sign_in(99).unwrap();
+}
+
+#[tokio::test]
+async fn starting_another_sign_in_gives_the_earlier_one_up() {
+    let world = world();
+    let first = world
+        .engine
+        .begin_sign_in(sign_in_settings())
+        .await
+        .unwrap();
+    let second = world
+        .engine
+        .begin_sign_in(sign_in_settings())
+        .await
+        .unwrap();
+    assert_ne!(first.id, second.id);
+
+    let error = world.engine.finish_sign_in(first.id).await.unwrap_err();
+    assert_eq!(error.kind, ErrorKind::SignIn);
+
+    world.sign_in.approve();
+    world.engine.finish_sign_in(second.id).await.unwrap();
+    assert_eq!(world.engine.list_accounts().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn the_two_ways_to_sign_in_do_not_mix() {
+    let world = world();
+
+    // Settings for the provider's page cannot be added with a password...
+    let error = world
+        .engine
+        .add_account(sign_in_settings(), PASSWORD)
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Invalid);
+
+    // ...password settings have no page to sign in on...
+    let error = world.engine.begin_sign_in(settings()).await.unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Invalid);
+
+    // ...and the two servers of one account sign in the same way.
+    let mut mixed = settings();
+    mixed.incoming.auth = mail_core::account::AuthMethod::OAuth2;
+    let error = world.engine.begin_sign_in(mixed).await.unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Invalid);
+    assert_eq!(error.server, Some(ServerRole::Outgoing));
+
+    assert!(world.sign_in.begun.lock().unwrap().is_empty());
+    assert_eq!(world.remote.lock().unwrap().connections, 0);
+}
+
+#[tokio::test]
+async fn a_server_without_a_sign_in_page_says_so_before_any_browser_opens() {
+    let world = world();
+    let mut elsewhere = sign_in_settings();
+    elsewhere.incoming.host = "imap.elsewhere.example".to_string();
+
+    let error = world.engine.begin_sign_in(elsewhere).await.unwrap_err();
+
+    assert_eq!(error.kind, ErrorKind::Unsupported);
+}
+
+#[tokio::test]
+async fn an_account_that_is_already_added_does_not_open_the_browser_again() {
+    let (world, _) = with_signed_in_account().await;
+
+    let error = world
+        .engine
+        .begin_sign_in(sign_in_settings())
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.kind, ErrorKind::Invalid);
+    assert_eq!(world.sign_in.begun.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn an_access_token_is_reused_while_it_lasts() {
+    let (world, account) = with_signed_in_account().await;
+    let inbox = folder(&world, &account, FolderRole::Inbox);
+
+    world.remote.lock().unwrap().drop_connection = true;
+    world.engine.sync_folder(inbox.id, false).await.unwrap();
+    world
+        .engine
+        .send_message(&outgoing(&account))
+        .await
+        .unwrap();
+
+    assert_eq!(*world.sign_in.renewals.lock().unwrap(), 0);
+    let remote = world.remote.lock().unwrap();
+    assert_eq!(remote.connections, 2);
+    assert!(remote.secrets_used.iter().all(|used| used == "access-1"));
+    assert_eq!(remote.sent.len(), 1);
+}
+
+#[tokio::test]
+async fn an_access_token_that_ran_out_is_renewed_without_asking_the_user() {
+    let world = world();
+    // Every token is used up the moment it is handed out.
+    *world.sign_in.lifetime.lock().unwrap() = 0;
+    let started = world
+        .engine
+        .begin_sign_in(sign_in_settings())
+        .await
+        .unwrap();
+    world.sign_in.approve();
+    let account = world.engine.finish_sign_in(started.id).await.unwrap();
+    let inbox = folder(&world, &account, FolderRole::Inbox);
+
+    world.remote.lock().unwrap().drop_connection = true;
+    world.engine.sync_folder(inbox.id, false).await.unwrap();
+    world
+        .engine
+        .send_message(&outgoing(&account))
+        .await
+        .unwrap();
+
+    assert_eq!(*world.sign_in.renewals.lock().unwrap(), 2);
+    assert_eq!(
+        world
+            .remote
+            .lock()
+            .unwrap()
+            .secrets_used
+            .last()
+            .map(String::as_str),
+        Some("access-3"),
+    );
+    // What renews the tokens stays the same in the keychain.
+    assert_eq!(
+        kept_secret(&world, &account).as_deref(),
+        Some(REFRESH_TOKEN)
+    );
+}
+
+#[tokio::test]
+async fn a_permission_taken_back_at_the_provider_asks_for_a_new_sign_in() {
+    let (world, account) = with_signed_in_account().await;
+    let inbox = folder(&world, &account, FolderRole::Inbox);
+
+    // The servers stop accepting the token the app still believes in.
+    *world.sign_in.revoked.lock().unwrap() = true;
+    {
+        let mut remote = world.remote.lock().unwrap();
+        remote.access_tokens.clear();
+        remote.drop_connection = true;
+    }
+
+    let refused = world.engine.sync_folder(inbox.id, false).await.unwrap_err();
+    assert_eq!(refused.kind, ErrorKind::Auth);
+    // The refused token is not tried again: the renewal tells what is wrong.
+    world.remote.lock().unwrap().drop_connection = true;
+    let renewal = world.engine.sync_folder(inbox.id, false).await.unwrap_err();
+    assert_eq!(renewal.kind, ErrorKind::SignIn);
+    let sending = world
+        .engine
+        .send_message(&outgoing(&account))
+        .await
+        .unwrap_err();
+    assert_eq!(sending.kind, ErrorKind::SignIn);
+}
+
+#[tokio::test]
+async fn a_token_the_server_refuses_early_is_renewed_on_the_next_try() {
+    let (world, account) = with_signed_in_account().await;
+    let inbox = folder(&world, &account, FolderRole::Inbox);
+    {
+        let mut remote = world.remote.lock().unwrap();
+        remote.access_tokens.clear();
+        remote.drop_connection = true;
+    }
+
+    world.engine.sync_folder(inbox.id, false).await.unwrap_err();
+    world.remote.lock().unwrap().drop_connection = true;
+    world.engine.sync_folder(inbox.id, false).await.unwrap();
+
+    assert_eq!(*world.sign_in.renewals.lock().unwrap(), 1);
+}
+
+#[tokio::test]
+async fn removing_a_signed_in_account_forgets_its_tokens() {
+    let (world, account) = with_signed_in_account().await;
+
+    world.engine.remove_account(account.id).unwrap();
+
+    assert!(world.secrets.values.lock().unwrap().is_empty());
+    assert!(world.engine.access_tokens().unwrap().is_empty());
 }
 
 // Reading

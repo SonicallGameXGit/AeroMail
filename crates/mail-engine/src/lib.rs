@@ -8,14 +8,14 @@ mod testing;
 mod tests;
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
-use mail_core::account::{AccountSettings, ServerRole, validate};
+use mail_core::account::{AccountSettings, AuthMethod, ServerRole, validate};
 use mail_core::address::EmailAddress;
 use mail_core::draft::{Draft, ReplyMode, reply_draft};
 use mail_core::error::{ErrorKind, MailError, MailResult};
@@ -24,20 +24,25 @@ use mail_core::mail::{
     Account, Attachment, Contact, Folder, FolderRole, MessageContent, MessageFlags, MessageSummary,
     OutgoingMessage,
 };
+use mail_core::oauth::{SignIn, Tokens};
 use mail_core::settings::AppSettings;
 use mail_core::transport::{
-    Connector, Envelope, Flag, FolderState, IncomingSession, LogoSource, RemoteFolder,
-    RemoteMessage, SecretStore,
+    Connector, Envelope, Flag, FolderState, IncomingSession, LogoSource, PendingSignIn,
+    RemoteFolder, RemoteMessage, SecretStore, SignInFlow,
 };
 use mail_render::{ComposeInput, compose, parse_header, render};
 use mail_store::{NewMessage, Store};
-use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
+use tokio::sync::{Mutex as AsyncMutex, Notify, OwnedMutexGuard};
 
 /// How many messages a folder shows at first, and how many "load more" adds.
 pub const PAGE: usize = 50;
 
 /// How long an answer about a domain's logo is trusted before asking again.
 pub const LOGO_TTL: i64 = 7 * 24 * 60 * 60;
+
+/// An access token is renewed this many seconds before the provider's own
+/// deadline, so one that is about to run out is never sent.
+const TOKEN_MARGIN: i64 = 60;
 
 /// Names of the settings in the store. Each holds "on" or "off"; one that
 /// was never written has its default.
@@ -105,10 +110,32 @@ impl IncomingSession for Disconnected {
     }
 }
 
+/// A sign-in the user is finishing in their browser.
+struct WaitingSignIn {
+    id: u32,
+    settings: AccountSettings,
+    /// Taken by the one call that waits for the browser.
+    flow: Option<Box<dyn PendingSignIn>>,
+    cancelled: Arc<Notify>,
+}
+
+/// An access token and the unix time it is used until.
+struct Access {
+    token: String,
+    until: i64,
+}
+
 pub struct Engine {
     store: Mutex<Store>,
     connector: Arc<dyn Connector>,
     secrets: Arc<dyn SecretStore>,
+    sign_in: Arc<dyn SignInFlow>,
+    /// One sign-in at a time: starting another gives the earlier one up.
+    waiting_sign_in: Mutex<Option<WaitingSignIn>>,
+    sign_in_counter: AtomicU32,
+    /// Access tokens of the accounts that sign in on their provider's page.
+    /// Only in memory: the keychain holds what renews them.
+    access: Mutex<HashMap<i64, Access>>,
     /// One live incoming connection per account, reused between operations.
     sessions: Mutex<HashMap<i64, Slot>>,
     message_counter: AtomicU64,
@@ -139,6 +166,16 @@ fn unix_now() -> (i64, u32) {
 
 fn invalid(detail: impl Into<String>) -> MailError {
     MailError::new(ErrorKind::Invalid, detail)
+}
+
+fn no_sign_in(detail: impl Into<String>) -> MailError {
+    MailError::new(ErrorKind::SignIn, detail)
+}
+
+/// Whether the account signs in on its provider's page. Both servers do the
+/// same: `validate` refuses settings where they differ.
+fn uses_sign_in(settings: &AccountSettings) -> bool {
+    settings.incoming.auth == AuthMethod::OAuth2
 }
 
 fn trimmed(mut settings: AccountSettings) -> AccountSettings {
@@ -174,11 +211,16 @@ impl Engine {
         connector: Arc<dyn Connector>,
         secrets: Arc<dyn SecretStore>,
         logos: Arc<dyn LogoSource>,
+        sign_in: Arc<dyn SignInFlow>,
     ) -> Self {
         Self {
             store: Mutex::new(store),
             connector,
             secrets,
+            sign_in,
+            waiting_sign_in: Mutex::new(None),
+            sign_in_counter: AtomicU32::new(0),
+            access: Mutex::new(HashMap::new()),
             sessions: Mutex::new(HashMap::new()),
             message_counter: AtomicU64::new(0),
             logos,
@@ -207,24 +249,87 @@ impl Engine {
         Ok(Arc::clone(slot))
     }
 
-    fn password(&self, account_id: i64) -> MailResult<String> {
+    /// What the keychain holds for the account: its password, or the token
+    /// that renews its sign-in.
+    fn kept_secret(&self, account_id: i64) -> MailResult<String> {
         self.secrets.get(&secret_key(account_id))?.ok_or_else(|| {
             MailError::new(
                 ErrorKind::Keychain,
-                "the password of this account is missing from the keychain",
+                "the password or sign-in of this account is missing from the keychain",
             )
         })
+    }
+
+    fn access_tokens(&self) -> MailResult<std::sync::MutexGuard<'_, HashMap<i64, Access>>> {
+        self.access
+            .lock()
+            .map_err(|_| MailError::new(ErrorKind::Connect, "the token table is unusable"))
+    }
+
+    fn remember_access(&self, account_id: i64, tokens: &Tokens) -> MailResult<()> {
+        let lifetime = i64::try_from(tokens.expires_in).unwrap_or(0);
+        let access = Access {
+            token: tokens.access.clone(),
+            until: unix_now().0 + lifetime - TOKEN_MARGIN,
+        };
+        self.access_tokens()?.insert(account_id, access);
+
+        Ok(())
+    }
+
+    /// What the account's servers are opened with right now: the password,
+    /// or an access token, renewed when the last one ran out.
+    async fn secret(&self, account: &Account) -> MailResult<String> {
+        if !uses_sign_in(&account.settings) {
+            return self.kept_secret(account.id);
+        }
+
+        let (now, _) = unix_now();
+        if let Some(access) = self.access_tokens()?.get(&account.id)
+            && now < access.until
+        {
+            return Ok(access.token.clone());
+        }
+
+        let refresh = self.kept_secret(account.id)?;
+        let tokens = self
+            .sign_in
+            .refresh(&account.settings.incoming.host, &refresh)
+            .await?;
+        // Some providers replace the long-lived token on every renewal.
+        if let Some(replaced) = &tokens.refresh
+            && *replaced != refresh
+        {
+            self.secrets.set(&secret_key(account.id), replaced)?;
+        }
+        self.remember_access(account.id, &tokens)?;
+
+        Ok(tokens.access)
+    }
+
+    /// A server refused the secret. A token that should still be good is
+    /// then not trusted again: the next attempt renews it, which also finds
+    /// out whether the user took the permission back.
+    fn refused(&self, account_id: i64, error: MailError) -> MailError {
+        if error.kind == ErrorKind::Auth
+            && let Ok(mut access) = self.access_tokens()
+        {
+            access.remove(&account_id);
+        }
+
+        error
     }
 
     /// The account's incoming connection, reconnected when it went stale.
     async fn session(&self, account: &Account) -> MailResult<OwnedMutexGuard<Session>> {
         let mut session = self.slot(account.id)?.lock_owned().await;
         if !session.is_alive().await {
-            let password = self.password(account.id)?;
+            let secret = self.secret(account).await?;
             *session = self
                 .connector
-                .connect_incoming(&account.settings.incoming, &password)
-                .await?;
+                .connect_incoming(&account.settings.incoming, &secret)
+                .await
+                .map_err(|error| self.refused(account.id, error))?;
         }
 
         Ok(session)
@@ -236,22 +341,19 @@ impl Engine {
         self.db(|store| store.accounts())
     }
 
-    /// Signs in to both servers; the account is only stored when both work.
-    pub async fn add_account(
-        &self,
-        settings: AccountSettings,
-        password: &str,
-    ) -> MailResult<Account> {
+    /// The settings of an account to add, tidied, or why they cannot be used.
+    fn new_settings(&self, settings: AccountSettings) -> MailResult<AccountSettings> {
         let settings = trimmed(settings);
 
         EmailAddress::parse(&settings.email).map_err(|error| invalid(error.to_string()))?;
         if let Some(issue) = validate(&settings).into_iter().find(|issue| issue.blocking) {
             return Err(invalid(format!("{:?}", issue.kind)).on(issue.server));
         }
-        if password.is_empty() {
-            return Err(invalid("the password is empty"));
-        }
 
+        Ok(settings)
+    }
+
+    fn refuse_duplicate(&self, settings: &AccountSettings) -> MailResult<()> {
         let duplicate = self.list_accounts()?.into_iter().any(|account| {
             account.settings.email.eq_ignore_ascii_case(&settings.email)
                 && account
@@ -264,18 +366,29 @@ impl Engine {
             return Err(invalid("this account is already added"));
         }
 
+        Ok(())
+    }
+
+    /// Signs in to both servers with `secret`; the account is only stored
+    /// when both work. `kept` is what goes to the keychain for later.
+    async fn connect_and_store(
+        &self,
+        settings: AccountSettings,
+        secret: &str,
+        kept: &str,
+    ) -> MailResult<Account> {
         let mut session = self
             .connector
-            .connect_incoming(&settings.incoming, password)
+            .connect_incoming(&settings.incoming, secret)
             .await?;
         self.connector
-            .check_outgoing(&settings.outgoing, password)
+            .check_outgoing(&settings.outgoing, secret)
             .await?;
         let folders = session.list_folders().await?;
 
         let account = self.db(|store| store.insert_account(&settings))?;
-        if let Err(error) = self.secrets.set(&secret_key(account.id), password) {
-            // Without the password the account could never reconnect.
+        if let Err(error) = self.secrets.set(&secret_key(account.id), kept) {
+            // Without it the account could never reconnect.
             self.db(|store| store.delete_account(account.id))?;
 
             return Err(error);
@@ -286,11 +399,117 @@ impl Engine {
         Ok(account)
     }
 
+    /// Adds an account that signs in with a password.
+    pub async fn add_account(
+        &self,
+        settings: AccountSettings,
+        password: &str,
+    ) -> MailResult<Account> {
+        let settings = self.new_settings(settings)?;
+        if uses_sign_in(&settings) {
+            return Err(invalid(
+                "these settings sign in on the provider's page, not with a password",
+            ));
+        }
+        if password.is_empty() {
+            return Err(invalid("the password is empty"));
+        }
+        self.refuse_duplicate(&settings)?;
+
+        self.connect_and_store(settings, password, password).await
+    }
+
+    fn waiting(&self) -> MailResult<std::sync::MutexGuard<'_, Option<WaitingSignIn>>> {
+        self.waiting_sign_in
+            .lock()
+            .map_err(|_| MailError::new(ErrorKind::Connect, "the sign-in is unusable"))
+    }
+
+    /// First half of adding an account that signs in on its provider's page:
+    /// checks the settings and gives the page to open. Nothing is stored yet.
+    pub async fn begin_sign_in(&self, settings: AccountSettings) -> MailResult<SignIn> {
+        let settings = self.new_settings(settings)?;
+        if !uses_sign_in(&settings) {
+            return Err(invalid("these settings sign in with a password"));
+        }
+        self.refuse_duplicate(&settings)?;
+
+        let flow = self
+            .sign_in
+            .begin(&settings.incoming.host, &settings.email)
+            .await?;
+        let url = flow.url().to_string();
+        let id = self.sign_in_counter.fetch_add(1, Ordering::Relaxed) + 1;
+
+        let earlier = self.waiting()?.replace(WaitingSignIn {
+            id,
+            settings,
+            flow: Some(flow),
+            cancelled: Arc::new(Notify::new()),
+        });
+        if let Some(earlier) = earlier {
+            earlier.cancelled.notify_one();
+        }
+
+        Ok(SignIn { id, url })
+    }
+
+    /// Second half: waits until the user is done in the browser, then signs
+    /// in to both servers and stores the account, like `add_account`.
+    pub async fn finish_sign_in(&self, sign_in_id: u32) -> MailResult<Account> {
+        let (flow, cancelled, settings) = {
+            let mut waiting = self.waiting()?;
+            let Some(entry) = waiting.as_mut().filter(|entry| entry.id == sign_in_id) else {
+                return Err(no_sign_in("this sign-in was given up"));
+            };
+            let Some(flow) = entry.flow.take() else {
+                return Err(no_sign_in("this sign-in is already being finished"));
+            };
+
+            (flow, Arc::clone(&entry.cancelled), entry.settings.clone())
+        };
+
+        let tokens = tokio::select! {
+            tokens = flow.finish() => tokens,
+            () = cancelled.notified() => Err(no_sign_in("the sign-in was cancelled")),
+        };
+        self.cancel_sign_in(sign_in_id)?;
+        let tokens = tokens?;
+        let Some(refresh) = &tokens.refresh else {
+            return Err(no_sign_in(
+                "the provider gave no permission that lasts beyond this hour",
+            ));
+        };
+
+        let account = self
+            .connect_and_store(settings, &tokens.access, refresh)
+            .await?;
+        self.remember_access(account.id, &tokens)?;
+
+        Ok(account)
+    }
+
+    /// Gives a sign-in up: a call waiting for it ends with a `SignIn` error.
+    /// One that is unknown or already over is not an error.
+    pub fn cancel_sign_in(&self, sign_in_id: u32) -> MailResult<()> {
+        let mut waiting = self.waiting()?;
+        if waiting.as_ref().is_some_and(|entry| entry.id == sign_in_id)
+            && let Some(entry) = waiting.take()
+        {
+            entry.cancelled.notify_one();
+        }
+
+        Ok(())
+    }
+
     /// Forgets the account locally. Nothing is deleted on the server.
     pub fn remove_account(&self, account_id: i64) -> MailResult<()> {
         self.db(|store| store.delete_account(account_id))?;
         if let Ok(mut sessions) = self.sessions.lock() {
             sessions.remove(&account_id);
+        }
+        if let Ok(mut access) = self.access.lock() {
+            access.remove(&account_id);
         }
 
         self.secrets.delete(&secret_key(account_id))
@@ -623,14 +842,15 @@ impl Engine {
             date: unix_now().0,
         })?;
 
-        let password = self.password(account.id)?;
+        let secret = self.secret(&account).await?;
         let envelope = Envelope {
             from: &from.email,
             recipients: &recipients,
         };
         self.connector
-            .send(&settings.outgoing, &password, envelope, &raw)
-            .await?;
+            .send(&settings.outgoing, &secret, envelope, &raw)
+            .await
+            .map_err(|error| self.refused(account.id, error))?;
 
         // The message is out. Keeping a copy in Sent is best effort: a
         // failure here must not make the send look failed.

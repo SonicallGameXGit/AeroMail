@@ -89,6 +89,8 @@ pub enum IssueKind {
     EmptyUsername,
     /// Incoming server set to SMTP, or outgoing server set to IMAP / POP3.
     WrongProtocol,
+    /// The two servers sign in differently, but an account has one secret.
+    MixedAuth,
     /// Not an error: the connection is unencrypted and the user must confirm it.
     Unencrypted,
 }
@@ -124,6 +126,15 @@ pub fn validate(settings: &AccountSettings) -> Vec<SettingsIssue> {
                 blocking: kind.is_blocking(),
             });
         }
+    }
+
+    if settings.incoming.auth != settings.outgoing.auth {
+        let kind = IssueKind::MixedAuth;
+        issues.push(SettingsIssue {
+            server: ServerRole::Outgoing,
+            kind,
+            blocking: kind.is_blocking(),
+        });
     }
 
     issues
@@ -243,6 +254,21 @@ mod tests {
             kinds(&settings, ServerRole::Outgoing),
             vec![IssueKind::WrongProtocol],
         );
+    }
+
+    #[test]
+    fn reports_servers_that_sign_in_differently() {
+        let mut settings = valid_settings();
+        settings.incoming.auth = AuthMethod::OAuth2;
+
+        assert_eq!(kinds(&settings, ServerRole::Incoming), Vec::new());
+        assert_eq!(
+            kinds(&settings, ServerRole::Outgoing),
+            vec![IssueKind::MixedAuth],
+        );
+
+        settings.outgoing.auth = AuthMethod::OAuth2;
+        assert_eq!(validate(&settings), Vec::new());
     }
 
     #[test]

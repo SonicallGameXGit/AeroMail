@@ -1,18 +1,23 @@
 use lettre::address::Envelope as SmtpEnvelope;
 use lettre::transport::smtp::Error as SmtpError;
-use lettre::transport::smtp::authentication::Credentials;
+use lettre::transport::smtp::authentication::{Credentials, Mechanism};
 use lettre::transport::smtp::client::{Tls, TlsParameters};
 use lettre::{Address, AsyncSmtpTransport, AsyncTransport, Tokio1Executor};
-use mail_core::account::{Security, ServerSettings};
+use mail_core::account::{AuthMethod, Security, ServerSettings};
 use mail_core::error::{ErrorKind, MailError, MailResult};
 use mail_core::transport::Envelope;
 
 use crate::tls::TIMEOUT;
 
-fn smtp_error(error: SmtpError) -> MailError {
-    let rejected_login = error
-        .status()
-        .is_some_and(|code| matches!(code.to_string().as_str(), "535" | "534" | "530"));
+fn smtp_error(error: SmtpError, auth: AuthMethod) -> MailError {
+    // A refused token is answered with a question (334) before the 535, and
+    // lettre gives up at the question with an error of its own. Nothing else
+    // of that kind can happen once the envelope is built.
+    let rejected_token = auth == AuthMethod::OAuth2 && error.is_client();
+    let rejected_login = rejected_token
+        || error
+            .status()
+            .is_some_and(|code| matches!(code.to_string().as_str(), "535" | "534" | "530"));
 
     let kind = if rejected_login {
         ErrorKind::Auth
@@ -37,7 +42,7 @@ fn smtp_error(error: SmtpError) -> MailError {
 
 fn transport(
     server: &ServerSettings,
-    password: &str,
+    secret: &str,
 ) -> MailResult<AsyncSmtpTransport<Tokio1Executor>> {
     let host = server.host.trim().to_string();
     let parameters = || {
@@ -50,24 +55,26 @@ fn transport(
         Security::None => Tls::None,
     };
 
-    Ok(
-        AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(host.clone())
-            .port(server.port)
-            .tls(tls)
-            .credentials(Credentials::new(
-                server.username.clone(),
-                password.to_string(),
-            ))
-            .timeout(Some(TIMEOUT))
-            .build(),
-    )
+    let mut builder = AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(host.clone())
+        .port(server.port)
+        .tls(tls)
+        .credentials(Credentials::new(
+            server.username.clone(),
+            secret.to_string(),
+        ))
+        .timeout(Some(TIMEOUT));
+    if server.auth == AuthMethod::OAuth2 {
+        builder = builder.authentication(vec![Mechanism::Xoauth2]);
+    }
+
+    Ok(builder.build())
 }
 
-pub(crate) async fn check(server: &ServerSettings, password: &str) -> MailResult<()> {
-    let reachable = transport(server, password)?
+pub(crate) async fn check(server: &ServerSettings, secret: &str) -> MailResult<()> {
+    let reachable = transport(server, secret)?
         .test_connection()
         .await
-        .map_err(smtp_error)?;
+        .map_err(|error| smtp_error(error, server.auth))?;
     if !reachable {
         return Err(MailError::new(
             ErrorKind::Connect,
@@ -86,7 +93,7 @@ fn address(text: &str) -> MailResult<Address> {
 
 pub(crate) async fn send(
     server: &ServerSettings,
-    password: &str,
+    secret: &str,
     envelope: Envelope<'_>,
     raw: &[u8],
 ) -> MailResult<()> {
@@ -98,17 +105,17 @@ pub(crate) async fn send(
     let envelope = SmtpEnvelope::new(Some(address(envelope.from)?), recipients)
         .map_err(|error| MailError::new(ErrorKind::Invalid, error.to_string()))?;
 
-    transport(server, password)?
+    transport(server, secret)?
         .send_raw(&envelope, raw)
         .await
-        .map_err(smtp_error)?;
+        .map_err(|error| smtp_error(error, server.auth))?;
 
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use mail_core::account::{AuthMethod, Protocol};
+    use mail_core::account::Protocol;
 
     use super::*;
     use crate::fake_server::FakeSmtp;
@@ -137,6 +144,30 @@ mod tests {
 
         let error = check(&settings(server.port), "wrong").await.unwrap_err();
         assert_eq!(error.kind, ErrorKind::Auth);
+    }
+
+    fn token_settings(port: u16) -> ServerSettings {
+        ServerSettings {
+            auth: AuthMethod::OAuth2,
+            ..settings(port)
+        }
+    }
+
+    #[tokio::test]
+    async fn check_signs_in_with_an_access_token() {
+        let server = FakeSmtp::start().await;
+
+        check(&token_settings(server.port), "token").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_refused_access_token_is_an_auth_error() {
+        let server = FakeSmtp::start().await;
+
+        let error = check(&token_settings(server.port), "expired")
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Auth, "{error}");
     }
 
     #[tokio::test]

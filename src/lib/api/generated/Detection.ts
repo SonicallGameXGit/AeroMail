@@ -14,6 +14,11 @@ provider: string | null,
  */
 passwordKind: PasswordKind, 
 /**
+ * Whether this build can sign in on the provider's own page (OAuth2)
+ * for the suggested servers.
+ */
+signInAvailable: boolean, 
+/**
  * Suggested settings, with IMAP as the incoming protocol.
  */
 settings: AccountSettings, 

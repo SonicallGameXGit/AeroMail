@@ -1,6 +1,13 @@
 // Shared by the scripts in this folder.
 
 import { execSync } from 'node:child_process'
+import { existsSync } from 'node:fs'
+
+// What the build is given (see .env.example). A variable already set in the
+// terminal wins over the file.
+if (existsSync('.env')) {
+    process.loadEnvFile('.env')
+}
 
 // Editors that are Electron apps themselves set this; it would start plain Node instead of the shell.
 export const shellEnv = () => {

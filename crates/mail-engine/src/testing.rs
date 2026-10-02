@@ -1,4 +1,5 @@
-//! In-memory stand-ins for the mail servers and the keychain.
+//! In-memory stand-ins for the mail servers, the keychain and the
+//! provider's sign-in page.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -9,10 +10,12 @@ use mail_core::account::{
 };
 use mail_core::error::{ErrorKind, MailError, MailResult};
 use mail_core::mail::{FolderRole, MessageFlags};
+use mail_core::oauth::Tokens;
 use mail_core::transport::{
-    Connector, Envelope, Flag, FolderState, IncomingSession, LogoSource, RemoteFolder,
-    RemoteMessage, SecretStore,
+    Connector, Envelope, Flag, FolderState, IncomingSession, LogoSource, PendingSignIn,
+    RemoteFolder, RemoteMessage, SecretStore, SignInFlow,
 };
+use tokio::sync::oneshot;
 
 pub const PASSWORD: &str = "secret";
 
@@ -47,6 +50,11 @@ pub struct Remote {
     /// Makes the next liveness check fail, as if the server hung up.
     pub drop_connection: bool,
     pub outgoing_down: bool,
+    /// The access tokens the servers accept from accounts that sign in on
+    /// the provider's page.
+    pub access_tokens: Vec<String>,
+    /// What each connection and each sent message signed in with.
+    pub secrets_used: Vec<String>,
 }
 
 pub type SharedRemote = Arc<Mutex<Remote>>;
@@ -309,22 +317,35 @@ pub struct FakeConnector {
     pub remote: SharedRemote,
 }
 
-fn check_password(password: &str, role: ServerRole) -> MailResult<()> {
-    if password != PASSWORD {
-        return Err(MailError::new(ErrorKind::Auth, "invalid credentials").on(role));
-    }
+impl FakeConnector {
+    fn check_secret(
+        &self,
+        server: &ServerSettings,
+        secret: &str,
+        role: ServerRole,
+    ) -> MailResult<()> {
+        let mut remote = self.remote.lock().unwrap();
+        let accepted = match server.auth {
+            AuthMethod::Password => secret == PASSWORD,
+            AuthMethod::OAuth2 => remote.access_tokens.iter().any(|token| token == secret),
+        };
+        if !accepted {
+            return Err(MailError::new(ErrorKind::Auth, "invalid credentials").on(role));
+        }
+        remote.secrets_used.push(secret.to_string());
 
-    Ok(())
+        Ok(())
+    }
 }
 
 #[async_trait]
 impl Connector for FakeConnector {
     async fn connect_incoming(
         &self,
-        _server: &ServerSettings,
-        password: &str,
+        server: &ServerSettings,
+        secret: &str,
     ) -> MailResult<Box<dyn IncomingSession>> {
-        check_password(password, ServerRole::Incoming)?;
+        self.check_secret(server, secret, ServerRole::Incoming)?;
         self.remote.lock().unwrap().connections += 1;
 
         Ok(Box::new(FakeSession {
@@ -332,24 +353,24 @@ impl Connector for FakeConnector {
         }))
     }
 
-    async fn check_outgoing(&self, _server: &ServerSettings, password: &str) -> MailResult<()> {
+    async fn check_outgoing(&self, server: &ServerSettings, secret: &str) -> MailResult<()> {
         if self.remote.lock().unwrap().outgoing_down {
             return Err(
                 MailError::new(ErrorKind::Connect, "connection refused").on(ServerRole::Outgoing)
             );
         }
 
-        check_password(password, ServerRole::Outgoing)
+        self.check_secret(server, secret, ServerRole::Outgoing)
     }
 
     async fn send(
         &self,
         server: &ServerSettings,
-        password: &str,
+        secret: &str,
         envelope: Envelope<'_>,
         raw: &[u8],
     ) -> MailResult<()> {
-        self.check_outgoing(server, password).await?;
+        self.check_outgoing(server, secret).await?;
         self.remote.lock().unwrap().sent.push(SentMail {
             from: envelope.from.to_string(),
             recipients: envelope.recipients.to_vec(),
@@ -398,6 +419,125 @@ impl SecretStore for FakeSecrets {
         self.values.lock().unwrap().remove(key);
 
         Ok(())
+    }
+}
+
+pub const SIGN_IN_URL: &str = "https://accounts.example.com/sign-in";
+pub const REFRESH_TOKEN: &str = "refresh-1";
+
+/// The provider's sign-in page and token address. The page is "used" by the
+/// test itself: `approve` and `refuse` are what the user does in the browser.
+pub struct FakeSignIn {
+    remote: SharedRemote,
+    /// Seconds an access token is said to last.
+    pub lifetime: Mutex<u64>,
+    /// The user took the app's permission back at the provider.
+    pub revoked: Mutex<bool>,
+    /// Server and address of every sign-in that was begun.
+    pub begun: Mutex<Vec<(String, String)>>,
+    pub renewals: Mutex<u32>,
+    issued: Mutex<u32>,
+    browser: Mutex<Option<oneshot::Sender<MailResult<Tokens>>>>,
+}
+
+struct FakePending {
+    answer: oneshot::Receiver<MailResult<Tokens>>,
+}
+
+#[async_trait]
+impl PendingSignIn for FakePending {
+    fn url(&self) -> &str {
+        SIGN_IN_URL
+    }
+
+    async fn finish(self: Box<Self>) -> MailResult<Tokens> {
+        match self.answer.await {
+            Ok(answer) => answer,
+            // The browser was closed: nothing ever comes.
+            Err(_) => std::future::pending().await,
+        }
+    }
+}
+
+impl FakeSignIn {
+    pub fn new(remote: SharedRemote) -> Self {
+        Self {
+            remote,
+            lifetime: Mutex::new(3600),
+            revoked: Mutex::new(false),
+            begun: Mutex::new(Vec::new()),
+            renewals: Mutex::new(0),
+            issued: Mutex::new(0),
+            browser: Mutex::new(None),
+        }
+    }
+
+    /// A new access token; the servers accept it and no earlier one.
+    fn issue(&self) -> Tokens {
+        let mut issued = self.issued.lock().unwrap();
+        *issued += 1;
+        let access = format!("access-{issued}");
+        self.remote.lock().unwrap().access_tokens = vec![access.clone()];
+
+        Tokens {
+            access,
+            refresh: None,
+            expires_in: *self.lifetime.lock().unwrap(),
+        }
+    }
+
+    fn answer(&self, answer: MailResult<Tokens>) {
+        let browser = self.browser.lock().unwrap().take().unwrap();
+        let _ = browser.send(answer);
+    }
+
+    /// The user signs in and allows the app.
+    pub fn approve(&self) {
+        self.answer(Ok(Tokens {
+            refresh: Some(REFRESH_TOKEN.to_string()),
+            ..self.issue()
+        }));
+    }
+
+    /// The user presses "Cancel" on the provider's page.
+    pub fn refuse(&self) {
+        self.answer(Err(MailError::new(
+            ErrorKind::SignIn,
+            "the provider answered: access_denied",
+        )));
+    }
+}
+
+#[async_trait]
+impl SignInFlow for FakeSignIn {
+    async fn begin(&self, host: &str, email: &str) -> MailResult<Box<dyn PendingSignIn>> {
+        if host != "imap.example.com" {
+            return Err(MailError::new(
+                ErrorKind::Unsupported,
+                format!("no sign-in page is known for {host}"),
+            ));
+        }
+        self.begun
+            .lock()
+            .unwrap()
+            .push((host.to_string(), email.to_string()));
+
+        let (browser, answer) = oneshot::channel();
+        *self.browser.lock().unwrap() = Some(browser);
+
+        Ok(Box::new(FakePending { answer }))
+    }
+
+    async fn refresh(&self, _host: &str, refresh_token: &str) -> MailResult<Tokens> {
+        if *self.revoked.lock().unwrap() || refresh_token != REFRESH_TOKEN {
+            return Err(MailError::new(
+                ErrorKind::SignIn,
+                "invalid_grant: Token has been expired or revoked.",
+            ));
+        }
+        *self.renewals.lock().unwrap() += 1;
+
+        Ok(self.issue())
     }
 }
 
@@ -453,4 +593,13 @@ pub fn settings() -> AccountSettings {
         incoming: server(Protocol::Imap, "imap.example.com", 993),
         outgoing: server(Protocol::Smtp, "smtp.example.com", 465),
     }
+}
+
+/// `settings`, signing in on the provider's page instead of with a password.
+pub fn sign_in_settings() -> AccountSettings {
+    let mut settings = settings();
+    settings.incoming.auth = AuthMethod::OAuth2;
+    settings.outgoing.auth = AuthMethod::OAuth2;
+
+    settings
 }
