@@ -13,7 +13,14 @@ pub(crate) const TIMEOUT: Duration = Duration::from_secs(20);
 pub(crate) async fn tcp(host: &str, port: u16) -> MailResult<TcpStream> {
     let connecting = TcpStream::connect((host, port));
     match tokio::time::timeout(TIMEOUT, connecting).await {
-        Ok(Ok(stream)) => Ok(stream),
+        Ok(Ok(stream)) => {
+            // Mail commands are short questions that each wait for an answer;
+            // holding them back to fill a packet only adds to every one.
+            // Best effort: a system that refuses is merely slower.
+            let _ = stream.set_nodelay(true);
+
+            Ok(stream)
+        }
         Ok(Err(error)) => Err(MailError::new(
             ErrorKind::Connect,
             format!("{host}:{port}: {error}"),

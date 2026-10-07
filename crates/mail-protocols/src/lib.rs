@@ -2,6 +2,7 @@
 //! incoming mail, SMTP for outgoing, DNS and HTTPS for sender pictures, the
 //! provider's sign-in page for OAuth2.
 
+mod alive;
 mod imap;
 mod logos;
 mod oauth;
@@ -36,7 +37,7 @@ impl Connector for NetConnector {
                     .await
                     .map_err(|error| error.on(ServerRole::Incoming))?;
 
-                Ok(Box::new(session))
+                Ok(Box::new(alive::Trusted::new(session, alive::TRUST)))
             }
             Protocol::Pop3 => Err(MailError::new(
                 ErrorKind::Unsupported,

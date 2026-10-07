@@ -211,8 +211,10 @@
             return
         }
         const folder = selectedFolder
-        folders = { ...folders, [folder.accountId]: await api.refreshFolders(folder.accountId) }
+        // The open folder first: counting every folder takes the server seconds.
         await sync(folder, false)
+        await api.refreshFolders(folder.accountId)
+        await reloadFolders(folder.accountId)
     })
 
     const patch = (id: number, change: (message: MessageSummary) => MessageSummary) => {

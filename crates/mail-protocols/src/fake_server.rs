@@ -107,6 +107,8 @@ async fn serve_imap(stream: TcpStream, log: Arc<Mutex<ImapLog>>) {
         } else if upper.starts_with("STATUS") {
             let name = command.split('"').nth(1).unwrap_or("INBOX");
             untagged.push_str(&format!("* STATUS \"{name}\" (MESSAGES 2 UNSEEN 1)\r\n"));
+        } else if upper.starts_with("SELECT \"MISSING\"") {
+            status = "NO no such folder".to_string();
         } else if upper.starts_with("SELECT") {
             untagged.push_str("* 2 EXISTS\r\n* 0 RECENT\r\n* OK [UIDVALIDITY 42] valid\r\n");
             status = "OK [READ-WRITE] selected".to_string();
@@ -118,13 +120,13 @@ async fn serve_imap(stream: TcpStream, log: Arc<Mutex<ImapLog>>) {
             }
         } else if upper.starts_with("UID FETCH") {
             let date = "INTERNALDATE \"14-Nov-2023 22:13:20 +0000\"";
-            if upper.contains("BODY.PEEK[HEADER]") {
+            if upper.contains("BODY.PEEK[HEADER.FIELDS (SUBJECT FROM TO CC DATE)]") {
                 untagged.push_str(&format!(
-                    "* 1 FETCH (UID 5 FLAGS (\\Seen) RFC822.SIZE 120 {date} BODY[HEADER] {})\r\n",
+                    "* 1 FETCH (UID 5 FLAGS (\\Seen) RFC822.SIZE 120 {date} BODY[HEADER.FIELDS (SUBJECT FROM TO CC DATE)] {})\r\n",
                     literal("Subject: First\r\n\r\n"),
                 ));
                 untagged.push_str(&format!(
-                    "* 2 FETCH (UID 9 FLAGS (\\Flagged) RFC822.SIZE 80 {date} BODY[HEADER] {})\r\n",
+                    "* 2 FETCH (UID 9 FLAGS (\\Flagged) RFC822.SIZE 80 {date} BODY[HEADER.FIELDS (SUBJECT FROM TO CC DATE)] {})\r\n",
                     literal("Subject: Second\r\n\r\n"),
                 ));
             } else if upper.contains("BODY.PEEK[]") {

@@ -26,3 +26,10 @@ ts-rs = "12"
 unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"
+
+# `pnpm dev` runs this profile. The libraries (TLS, SQLite, the mail and HTML
+# parsers) are compiled once, so optimising them costs nothing on a rebuild,
+# and unoptimised they made every sync and every opened message about three
+# times slower than in an installed build.
+[profile.dev.package."*"]
+opt-level = 3

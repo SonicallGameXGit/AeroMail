@@ -49,7 +49,8 @@ pub enum Flag {
 /// An authenticated connection to an incoming mail server.
 #[async_trait]
 pub trait IncomingSession: Send {
-    /// Cheap round-trip that tells whether the connection is still usable.
+    /// Whether the connection is still usable. Asks the server (one cheap
+    /// round-trip) unless it answered a moment ago.
     async fn is_alive(&mut self) -> bool;
     async fn list_folders(&mut self) -> MailResult<Vec<RemoteFolder>>;
     async fn folder_state(&mut self, folder: &str) -> MailResult<FolderState>;

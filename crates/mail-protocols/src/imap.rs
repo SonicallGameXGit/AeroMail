@@ -310,10 +310,12 @@ impl IncomingSession for ImapSession {
         uids: &[u32],
     ) -> MailResult<Vec<RemoteMessage>> {
         self.select(folder).await?;
+        // Only what the message list shows: whole header blocks are several
+        // times larger (signatures, routing) and were most of a sync.
         let fetched = self
             .fetch(
                 uids,
-                "(UID FLAGS RFC822.SIZE INTERNALDATE BODY.PEEK[HEADER])",
+                "(UID FLAGS RFC822.SIZE INTERNALDATE BODY.PEEK[HEADER.FIELDS (SUBJECT FROM TO CC DATE)])",
             )
             .await?;
 
