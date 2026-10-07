@@ -211,15 +211,20 @@ describe('errors', () => {
 })
 
 describe('message frame', () => {
-    it('never allows scripts and blocks remote images unless allowed', () => {
+    it('never allows scripts and blocks remote images and fonts unless allowed', () => {
         const blocked = frameDocument('<p>Hi</p>', false)
         expect(blocked).toContain('default-src \'none\'')
+        expect(blocked).toContain('style-src \'unsafe-inline\';')
+        expect(blocked).toContain('font-src data:;')
         expect(blocked).toContain('img-src data:"')
         expect(blocked).not.toContain('script-src')
         expect(blocked).toContain('<body><p>Hi</p></body>')
 
         const allowed = frameDocument('<p>Hi</p>', true)
+        expect(allowed).toContain('style-src \'unsafe-inline\' http: https:;')
+        expect(allowed).toContain('font-src data: http: https:;')
         expect(allowed).toContain('img-src data: http: https:"')
+        expect(allowed).not.toContain('script-src')
     })
 
     it('leaves the layout of a message to the message', () => {

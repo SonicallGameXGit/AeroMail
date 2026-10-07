@@ -245,8 +245,12 @@ export const errorMessage = (error: MailError): string => {
 // is the second line of defence after sanitising in the core: nothing but
 // inline styles and images, and remote images only when allowed.
 export const frameDocument = (html: string, allowRemote: boolean): string => {
-    const images = allowRemote ? 'data: http: https:' : 'data:'
-    const policy = `default-src 'none'; style-src 'unsafe-inline'; img-src ${images}`
+    // Allowed remote content is all the message loads to look as it was
+    // written: its images, and the fonts and font style sheets it imports.
+    // Fonts embedded in the message itself are always fine.
+    const policy = allowRemote
+        ? 'default-src \'none\'; style-src \'unsafe-inline\' http: https:; font-src data: http: https:; img-src data: http: https:'
+        : 'default-src \'none\'; style-src \'unsafe-inline\'; font-src data:; img-src data:'
     // Only defaults for mail that brings no styling of its own: the message's
     // style sheet comes later and wins. Nothing here may change how a laid-out
     // message is measured (no size limits on images, and `break-word` rather

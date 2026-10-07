@@ -17,7 +17,10 @@ export default defineConfig({
                 mode: 'auto',
                 directives: {
                     'default-src': ['self'],
-                    'style-src': ['self', 'unsafe-inline'],
+                    // The message frame inherits this policy and narrows it with its own: remote
+                    // images, fonts and font style sheets load there only once the user allowed them.
+                    'style-src': ['self', 'unsafe-inline', 'http:', 'https:'],
+                    'font-src': ['self', 'data:', 'http:', 'https:'],
                     'img-src': ['self', 'data:', 'http:', 'https:'],
                     'frame-src': ['self'],
                     'connect-src': ['self'],

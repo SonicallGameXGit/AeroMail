@@ -108,7 +108,7 @@ export const en = {
     'settings.pictures': 'Show sender pictures',
     'settings.picturesHint': 'A company\'s logo is looked up on the internet by the domain of its address. Turned off, nothing is looked up.',
     'settings.remoteImages': 'Always show remote images',
-    'settings.remoteImagesHint': 'Images are downloaded from the sender\'s server as soon as a message is opened, which tells the sender that you read it, when and from where. Turned off, each message asks first.',
+    'settings.remoteImagesHint': 'Images and fonts are downloaded from the sender\'s server as soon as a message is opened, which tells the sender that you read it, when and from where. Turned off, each message asks first.',
     'settings.done': 'Done',
 
     'sidebar.folders': 'Folders',
@@ -143,7 +143,7 @@ export const en = {
     'reader.from': 'From',
     'reader.to': 'To',
     'reader.cc': 'Cc',
-    'reader.remoteBlocked': 'Remote images are hidden to protect your privacy.',
+    'reader.remoteBlocked': 'Remote images and fonts are hidden to protect your privacy.',
     'reader.showRemote': 'Show images',
     'reader.attachments': 'Attachments',
     'reader.save': 'Save {name}',

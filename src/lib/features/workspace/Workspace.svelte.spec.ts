@@ -314,7 +314,7 @@ describe('Workspace', () => {
         const state = seededState()
         state.remoteMessages = [10, 11]
         render(Workspace, { api: createFakeApi(state) })
-        const hidden = page.getByText('Remote images are hidden to protect your privacy.')
+        const hidden = page.getByText('Remote images and fonts are hidden to protect your privacy.')
         const policy = () => page.getByTitle('Message content').element().getAttribute('srcdoc') ?? ''
 
         await row('Quarterly report').click()
@@ -357,6 +357,22 @@ describe('Workspace', () => {
         await expect.element(page.getByRole('alert')).toHaveTextContent('disk full')
         await expect.element(page.getByRole('checkbox', { name: 'Always show remote images' })).not.toBeChecked()
         expect(state.settings.remoteImages).toBe(false)
+    })
+
+    it('shows a message as a light page in the dark theme, so its own dark style stays off', async () => {
+        // The frame tells the message which scheme it is shown in; a message's
+        // dark-mode rules make its text light, for a dark page it does not get.
+        document.documentElement.style.colorScheme = 'dark'
+        try {
+            start()
+
+            await row('Quarterly report').click()
+
+            const frame = page.getByTitle('Message content').element()
+            expect(getComputedStyle(frame).colorScheme).toBe('light')
+        } finally {
+            document.documentElement.style.colorScheme = ''
+        }
     })
 
     it('opens links from a message in the system browser, not in the app', async () => {

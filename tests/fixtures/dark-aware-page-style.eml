@@ -1,0 +1,33 @@
+From: Bank <no-reply@bank.example>
+To: me@example.com
+Subject: Page styled on its body, with a dark-mode style sheet
+Date: Tue, 06 Oct 2026 16:13:00 +0200
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+
+<!doctype html>
+<html>
+  <head>
+    <style type="text/css">
+      :root { color-scheme: light dark; }
+      @media (prefers-color-scheme: dark) {
+        .title h1 { color: #FFFFFF !important; }
+      }
+    </style>
+    <style media="screen and (min-width:480px)">
+      .column { width: 100% !important; }
+    </style>
+  </head>
+  <body bgcolor="#f5f7fa" style="word-spacing: normal; margin: 0;">
+    <table role="presentation" width="100%">
+      <tr>
+        <td class="title" style="font-size:0px;padding-top:8px;">
+          <div style="font-size:13px;color:#000000;"><h1 style="margin: 0; font-size: 40px; color: #191C1F;">Build a savings habit</h1></div>
+        </td>
+      </tr>
+      <tr>
+        <td><img src="https://cdn.bank.example/spacer.gif" width="1" height="1" alt=""></td>
+      </tr>
+    </table>
+  </body>
+</html>

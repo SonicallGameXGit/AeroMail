@@ -267,8 +267,11 @@
         min-height: 0;
         width: 100%;
         border: 0;
-        /* Mail is written for a white page, whatever the app theme is. */
+        /* Mail is written for a white page, whatever the app theme is. The
+           message is told so too: its dark-mode rules would otherwise turn
+           its text white on this page. */
         background: #ffffff;
+        color-scheme: light;
     }
 
     pre {

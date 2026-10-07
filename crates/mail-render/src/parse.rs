@@ -300,6 +300,23 @@ JVBERi0xLjQ=\r\n\
     }
 
     #[test]
+    fn page_styled_on_its_body_keeps_its_page() {
+        let raw = include_bytes!("../../../tests/fixtures/dark-aware-page-style.eml");
+        let rendered = render(raw, false).unwrap();
+        let html = rendered.html.unwrap();
+
+        assert!(html.starts_with(
+            "<body style=\"background-color:#f5f7fa;word-spacing: normal; margin: 0;\">"
+        ));
+        assert!(html.contains("media=\"screen and (min-width:480px)\""));
+        // The dark-mode rules stay; the frame tells the message it is light.
+        assert!(html.contains("prefers-color-scheme: dark"));
+        assert!(html.contains("font-size: 40px; color: #191C1F;\">Build a savings habit</h1>"));
+        assert!(html.contains("<img src=\"data:,\" width=\"1\" height=\"1\" alt=\"\">"));
+        assert!(rendered.remote_content_blocked);
+    }
+
+    #[test]
     fn remote_images_show_when_allowed() {
         let rendered = render(MIXED, true).unwrap();
 
