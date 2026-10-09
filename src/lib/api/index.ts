@@ -2,7 +2,7 @@
 // Components receive an `Api` and never reach for the shell themselves, so the
 // same UI can later run against another transport or a fake in tests.
 
-import type { DesktopBridge, Reply } from './bridge'
+import type { DesktopBridge, NotificationRequest, NotificationTarget, Reply } from './bridge'
 import type { Account } from './generated/Account'
 import type { AccountSettings } from './generated/AccountSettings'
 import type { AddressError } from './generated/AddressError'
@@ -12,7 +12,10 @@ import type { Detection } from './generated/Detection'
 import type { Draft } from './generated/Draft'
 import type { ErrorKind } from './generated/ErrorKind'
 import type { Folder } from './generated/Folder'
+import type { Contact } from './generated/Contact'
 import type { MailError } from './generated/MailError'
+import type { MailEvent } from './generated/MailEvent'
+import type { NewMailItem } from './generated/NewMailItem'
 import type { MessageContent } from './generated/MessageContent'
 import type { MessageSummary } from './generated/MessageSummary'
 import type { OutgoingMessage } from './generated/OutgoingMessage'
@@ -37,6 +40,12 @@ export type { Folder } from './generated/Folder'
 export type { FolderRole } from './generated/FolderRole'
 export type { IssueKind } from './generated/IssueKind'
 export type { MailError } from './generated/MailError'
+export type { MailEvent } from './generated/MailEvent'
+export type { NewMailItem } from './generated/NewMailItem'
+export type { NotificationIconRequest, NotificationRequest, NotificationTarget } from './bridge'
+export type { NotificationDuration } from './generated/NotificationDuration'
+export type { NotificationIcon } from './generated/NotificationIcon'
+export type { NotificationSettings } from './generated/NotificationSettings'
 export type { MessageContent } from './generated/MessageContent'
 export type { MessageFlags } from './generated/MessageFlags'
 export type { MessageSummary } from './generated/MessageSummary'
@@ -95,6 +104,17 @@ export type Api = {
 
     settings: () => Promise<AppSettings>
     setSettings: (settings: AppSettings) => Promise<void>
+    // What a fresh install has.
+    defaultSettings: () => Promise<AppSettings>
+
+    // What the core finds out by itself, like new mail. Returns the function
+    // that stops listening.
+    onEvent: (listener: (event: MailEvent) => void) => () => void
+    // Shows a system notification (the shell skips it while the window is in
+    // front of the user, unless the request says otherwise).
+    notify: (notification: NotificationRequest) => Promise<void>
+    // The user clicked a notification: where it leads.
+    onNotificationOpen: (listener: (target: NotificationTarget) => void) => () => void
 }
 
 const addressErrors: readonly string[] = [
@@ -148,6 +168,76 @@ export const toMailError = (error: unknown): MailError => {
     const detail = error instanceof Error ? error.message : String(error)
 
     return { kind: 'Protocol', server: null, detail }
+}
+
+const isContact = (value: unknown): value is Contact => {
+    if (typeof value !== 'object' || value === null) {
+        return false
+    }
+
+    return 'name' in value && (value.name === null || typeof value.name === 'string')
+        && 'email' in value && typeof value.email === 'string'
+}
+
+const isNewMailItem = (value: unknown): value is NewMailItem => {
+    if (typeof value !== 'object' || value === null) {
+        return false
+    }
+
+    return 'id' in value && typeof value.id === 'number'
+        && 'subject' in value && typeof value.subject === 'string'
+        && 'from' in value && (value.from === null || isContact(value.from))
+}
+
+// What the shell passes on is whatever the core sent; anything that does not
+// look like an event is dropped.
+export const toMailEvent = (value: unknown): MailEvent | null => {
+    if (typeof value !== 'object' || value === null || !('type' in value)) {
+        return null
+    }
+    if (!('accountId' in value) || typeof value.accountId !== 'number') {
+        return null
+    }
+    if (!('folderId' in value) || typeof value.folderId !== 'number') {
+        return null
+    }
+
+    if (value.type === 'folderChanged') {
+        return { type: 'folderChanged', accountId: value.accountId, folderId: value.folderId }
+    }
+    if (value.type !== 'newMail' || !('account' in value) || typeof value.account !== 'string') {
+        return null
+    }
+    if (!('messages' in value) || !Array.isArray(value.messages)) {
+        return null
+    }
+
+    const messages: NewMailItem[] = []
+    for (const message of value.messages) {
+        if (!isNewMailItem(message)) {
+            return null
+        }
+        messages.push(message)
+    }
+
+    return { type: 'newMail', accountId: value.accountId, folderId: value.folderId, account: value.account, messages }
+}
+
+export const toNotificationTarget = (value: unknown): NotificationTarget | null => {
+    if (typeof value !== 'object' || value === null) {
+        return null
+    }
+    if (!('accountId' in value) || typeof value.accountId !== 'number') {
+        return null
+    }
+    if (!('folderId' in value) || typeof value.folderId !== 'number') {
+        return null
+    }
+    if (!('messageId' in value) || typeof value.messageId !== 'number') {
+        return null
+    }
+
+    return { accountId: value.accountId, folderId: value.folderId, messageId: value.messageId }
 }
 
 const bridge = (): DesktopBridge => {
@@ -232,4 +322,25 @@ export const desktopApi: Api = {
 
     settings: () => call<AppSettings>('settings'),
     setSettings: (settings) => call<void>('set_settings', { settings }),
+    defaultSettings: () => call<AppSettings>('default_settings'),
+
+    onEvent: (listener) => {
+        return bridge().onEvent((raw) => {
+            const event = toMailEvent(raw)
+            if (event !== null) {
+                listener(event)
+            }
+        })
+    },
+    notify: async (notification) => {
+        unwrap(await bridge().notify(JSON.parse(JSON.stringify(notification))))
+    },
+    onNotificationOpen: (listener) => {
+        return bridge().onNotificationOpen((raw) => {
+            const target = toNotificationTarget(raw)
+            if (target !== null) {
+                listener(target)
+            }
+        })
+    },
 }

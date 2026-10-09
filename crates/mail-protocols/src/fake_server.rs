@@ -25,6 +25,8 @@ const FIRST: &str = "Subject: First\r\n\r\nBody of the first\r\n";
 struct ImapLog {
     commands: Vec<String>,
     appended: Vec<u8>,
+    /// A message arrived that the next command's answer tells of.
+    delivered: bool,
 }
 
 pub(crate) struct FakeImap {
@@ -54,6 +56,10 @@ impl FakeImap {
 
     pub fn commands(&self) -> Vec<String> {
         self.log.lock().unwrap().commands.clone()
+    }
+
+    pub fn deliver(&self) {
+        self.log.lock().unwrap().delivered = true;
     }
 
     pub fn appended(&self) -> Vec<u8> {
@@ -97,7 +103,7 @@ async fn serve_imap(stream: TcpStream, log: Arc<Mutex<ImapLog>>) {
                 status = "NO [AUTHENTICATIONFAILED] invalid credentials".to_string();
             }
         } else if upper.starts_with("CAPABILITY") {
-            untagged.push_str("* CAPABILITY IMAP4rev1 MOVE UIDPLUS\r\n");
+            untagged.push_str("* CAPABILITY IMAP4rev1 MOVE UIDPLUS IDLE\r\n");
         } else if upper.starts_with("LIST") {
             untagged.push_str("* LIST (\\HasNoChildren) \"/\" \"INBOX\"\r\n");
             untagged.push_str("* LIST (\\Noselect \\HasChildren) \"/\" \"[Gmail]\"\r\n");
@@ -134,6 +140,22 @@ async fn serve_imap(stream: TcpStream, log: Arc<Mutex<ImapLog>>) {
             } else {
                 untagged.push_str("* 1 FETCH (UID 5 FLAGS (\\Seen))\r\n");
             }
+        } else if upper.starts_with("NOOP") {
+            if std::mem::take(&mut log.lock().unwrap().delivered) {
+                untagged.push_str("* 3 EXISTS\r\n");
+            }
+        } else if upper.starts_with("IDLE") {
+            // A message arrives as soon as the client starts waiting.
+            write
+                .write_all(b"+ idling\r\n* 3 EXISTS\r\n")
+                .await
+                .unwrap();
+            let mut done = String::new();
+            lines.read_line(&mut done).await.unwrap();
+            log.lock()
+                .unwrap()
+                .commands
+                .push(done.trim_end().to_string());
         } else if upper.starts_with("APPEND") {
             let size: usize = command
                 .rsplit('{')

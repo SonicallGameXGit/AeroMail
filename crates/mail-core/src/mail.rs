@@ -154,6 +154,50 @@ pub struct OutgoingMessage {
     pub references: Vec<String>,
 }
 
+/// What a notification shows about one new message.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct NewMailItem {
+    #[ts(type = "number")]
+    pub id: i64,
+    pub subject: String,
+    pub from: Option<Contact>,
+    /// The start of the text, when the notification shows it (see
+    /// `NotificationSettings::shows_preview`) and it could be read.
+    pub preview: Option<String>,
+}
+
+/// Something the engine found out by itself, without being asked.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+#[ts(export)]
+pub enum MailEvent {
+    /// A folder's cached messages or counts changed; the lists can be read
+    /// again from the cache, no server is needed for that.
+    FolderChanged {
+        #[ts(type = "number")]
+        account_id: i64,
+        #[ts(type = "number")]
+        folder_id: i64,
+    },
+    /// Unread messages arrived in the inbox (never sent when the user turned
+    /// notifications off).
+    NewMail {
+        #[ts(type = "number")]
+        account_id: i64,
+        #[ts(type = "number")]
+        folder_id: i64,
+        /// The account's address, so a notification says where mail arrived.
+        account: String,
+        messages: Vec<NewMailItem>,
+    },
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

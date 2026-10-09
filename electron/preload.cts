@@ -10,4 +10,21 @@ contextBridge.exposeInMainWorld('mailclient', {
         return ipcRenderer.invoke('shell:save-attachment', messageId, index, name)
     },
     openExternal: (url: string) => ipcRenderer.invoke('shell:open-external', url),
+    notify: (notification: unknown) => ipcRenderer.invoke('shell:notify', notification),
+    onEvent: (listener: (event: unknown) => void) => {
+        const forward = (_event: unknown, event: unknown) => listener(event)
+        ipcRenderer.on('core:event', forward)
+
+        return () => {
+            ipcRenderer.removeListener('core:event', forward)
+        }
+    },
+    onNotificationOpen: (listener: (target: unknown) => void) => {
+        const forward = (_event: unknown, target: unknown) => listener(target)
+        ipcRenderer.on('shell:notification-open', forward)
+
+        return () => {
+            ipcRenderer.removeListener('shell:notification-open', forward)
+        }
+    },
 })

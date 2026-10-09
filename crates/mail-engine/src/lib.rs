@@ -10,7 +10,7 @@ mod tests;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use base64::Engine as _;
@@ -21,8 +21,8 @@ use mail_core::draft::{Draft, ReplyMode, reply_draft};
 use mail_core::error::{ErrorKind, MailError, MailResult};
 use mail_core::logo::{is_logo, sender_domain};
 use mail_core::mail::{
-    Account, Attachment, Contact, Folder, FolderRole, MessageContent, MessageFlags, MessageSummary,
-    OutgoingMessage,
+    Account, Attachment, Contact, Folder, FolderRole, MailEvent, MessageContent, MessageFlags,
+    MessageSummary, NewMailItem, OutgoingMessage,
 };
 use mail_core::oauth::{SignIn, Tokens};
 use mail_core::settings::AppSettings;
@@ -32,7 +32,8 @@ use mail_core::transport::{
 };
 use mail_render::{ComposeInput, compose, parse_header, render};
 use mail_store::{NewMessage, Store};
-use tokio::sync::{Mutex as AsyncMutex, Notify, OwnedMutexGuard};
+use tokio::sync::{Mutex as AsyncMutex, Notify, OwnedMutexGuard, broadcast};
+use tokio::task::JoinHandle;
 
 /// How many messages a folder shows at first, and how many "load more" adds.
 pub const PAGE: usize = 50;
@@ -44,18 +45,19 @@ pub const LOGO_TTL: i64 = 7 * 24 * 60 * 60;
 /// deadline, so one that is about to run out is never sent.
 const TOKEN_MARGIN: i64 = 60;
 
-/// Names of the settings in the store. Each holds "on" or "off"; one that
-/// was never written has its default.
-const SENDER_PICTURES: &str = "sender_pictures";
-const REMOTE_IMAGES: &str = "remote_images";
+/// How many new messages a notification names, and so needs the text of.
+const PREVIEWS: usize = 3;
+/// A message larger than this is not downloaded only for its preview.
+const PREVIEW_SIZE: u32 = 512 * 1024;
 
-fn switch(stored: Option<String>, default: bool) -> bool {
-    match stored.as_deref() {
-        Some("on") => true,
-        Some("off") => false,
-        _ => default,
-    }
-}
+/// How long one wait for the server's news lasts. Shorter than the 30
+/// minutes servers allow, because routers drop quiet connections sooner.
+const WATCH_LIMIT: Duration = Duration::from_secs(5 * 60);
+
+/// Pauses after a failed check (offline, server down): doubling from the
+/// first to the last, then staying there.
+const RETRY_FIRST: Duration = Duration::from_secs(5);
+const RETRY_LAST: Duration = Duration::from_secs(5 * 60);
 
 type Session = Box<dyn IncomingSession>;
 type Slot = Arc<AsyncMutex<Session>>;
@@ -85,6 +87,10 @@ impl IncomingSession for Disconnected {
         disconnected()
     }
 
+    async fn fetch_new(&mut self, _: &str, _: u32) -> MailResult<Vec<RemoteMessage>> {
+        disconnected()
+    }
+
     async fn fetch_flags(&mut self, _: &str, _: &[u32]) -> MailResult<Vec<(u32, MessageFlags)>> {
         disconnected()
     }
@@ -106,6 +112,10 @@ impl IncomingSession for Disconnected {
     }
 
     async fn append(&mut self, _: &str, _: &[u8], _: bool) -> MailResult<()> {
+        disconnected()
+    }
+
+    async fn wait_for_change(&mut self, _: &str, _: Duration) -> MailResult<()> {
         disconnected()
     }
 }
@@ -142,6 +152,10 @@ pub struct Engine {
     logos: Arc<dyn LogoSource>,
     /// One lookup per domain at a time: a list full of one sender asks once.
     logo_lookups: Mutex<HashMap<String, Arc<AsyncMutex<()>>>>,
+    events: broadcast::Sender<MailEvent>,
+    folder_locks: Mutex<HashMap<i64, Arc<AsyncMutex<()>>>>,
+    /// Wakes `watch` when an account was added or removed.
+    accounts_changed: Notify,
 }
 
 /// A drawing as an address an `<img>` can show without any request.
@@ -225,7 +239,22 @@ impl Engine {
             message_counter: AtomicU64::new(0),
             logos,
             logo_lookups: Mutex::new(HashMap::new()),
+            events: broadcast::channel(64).0,
+            folder_locks: Mutex::new(HashMap::new()),
+            accounts_changed: Notify::new(),
         }
+    }
+
+    /// Everything the engine finds out by itself from now on. A receiver
+    /// that falls behind loses the oldest events, which is harmless: they
+    /// only say "read the cache again".
+    pub fn subscribe(&self) -> broadcast::Receiver<MailEvent> {
+        self.events.subscribe()
+    }
+
+    fn announce(&self, event: MailEvent) {
+        // Nobody listening is fine.
+        let _ = self.events.send(event);
     }
 
     /// Runs a piece of work on the store. Never held across an await.
@@ -395,6 +424,7 @@ impl Engine {
         }
         self.db(|store| store.replace_folders(account.id, &folders))?;
         *self.slot(account.id)?.lock().await = session;
+        self.accounts_changed.notify_one();
 
         Ok(account)
     }
@@ -511,6 +541,7 @@ impl Engine {
         if let Ok(mut access) = self.access.lock() {
             access.remove(&account_id);
         }
+        self.accounts_changed.notify_one();
 
         self.secrets.delete(&secret_key(account_id))
     }
@@ -537,10 +568,22 @@ impl Engine {
         self.db(|store| store.messages(folder_id))
     }
 
+    /// One writer of a folder's cached messages at a time, so two of them
+    /// never both take a message for news.
+    fn folder_lock(&self, folder_id: i64) -> MailResult<Arc<AsyncMutex<()>>> {
+        let mut locks = self
+            .folder_locks
+            .lock()
+            .map_err(|_| MailError::new(ErrorKind::Storage, "the folder table is unusable"))?;
+
+        Ok(Arc::clone(locks.entry(folder_id).or_default()))
+    }
+
     /// Brings the cached window of a folder in line with the server: new
     /// messages arrive, deleted ones disappear, flags are updated. With
     /// `grow` the window also extends one page further into the past.
     pub async fn sync_folder(&self, folder_id: i64, grow: bool) -> MailResult<Vec<MessageSummary>> {
+        let _writing = self.folder_lock(folder_id)?.lock_owned().await;
         let folder = self.db(|store| store.folder(folder_id))?;
         let account = self.db(|store| store.account(folder.account_id))?;
         let mut session = self.session(&account).await?;
@@ -582,10 +625,18 @@ impl Engine {
         } else {
             session.fetch_flags(&folder.path, &known).await?
         };
-        drop(session);
+
+        // Only messages newer than everything cached are "arrived": a window
+        // that grows into the past, or a first sync, is not news.
+        let newest = cached.last().copied();
+        let arrived: Vec<u32> = new
+            .iter()
+            .copied()
+            .filter(|uid| newest.is_some_and(|newest| *uid > newest))
+            .collect();
 
         let total = u32::try_from(state.uids.len()).unwrap_or(u32::MAX);
-        self.db(|store| {
+        let messages = self.db(|store| {
             store.delete_uids(folder_id, &gone)?;
             for remote in &headers {
                 store.upsert_message(folder_id, &to_new_message(remote))?;
@@ -596,7 +647,220 @@ impl Engine {
             store.set_folder_counts(folder_id, state.unread, total)?;
 
             store.messages(folder_id)
-        })
+        })?;
+        let news = self
+            .news(&account, &folder, &arrived, &messages, &mut **session)
+            .await?;
+        drop(session);
+
+        if !new.is_empty() || !gone.is_empty() || state.unread != folder.unread {
+            self.announce(MailEvent::FolderChanged {
+                account_id: account.id,
+                folder_id,
+            });
+        }
+        if let Some(news) = news {
+            self.announce(news);
+        }
+
+        Ok(messages)
+    }
+
+    /// What `NewMail` says about messages that just arrived in `folder`: the
+    /// unread ones, with the start of their text when the notification
+    /// shows it. `None` when there is nothing to tell.
+    async fn news(
+        &self,
+        account: &Account,
+        folder: &Folder,
+        arrived: &[u32],
+        messages: &[MessageSummary],
+        session: &mut dyn IncomingSession,
+    ) -> MailResult<Option<MailEvent>> {
+        if folder.role != FolderRole::Inbox || arrived.is_empty() {
+            return Ok(None);
+        }
+        let settings = self.settings()?.notifications;
+        if !settings.enabled {
+            return Ok(None);
+        }
+
+        let mut items = Vec::new();
+        let fresh = messages
+            .iter()
+            .filter(|message| arrived.contains(&message.uid) && !message.flags.seen);
+        for message in fresh {
+            let preview = if settings.shows_preview()
+                && items.len() < PREVIEWS
+                && message.size <= PREVIEW_SIZE
+            {
+                self.preview(message, &folder.path, session).await
+            } else {
+                None
+            };
+            items.push(NewMailItem {
+                id: message.id,
+                subject: message.subject.clone(),
+                from: message.from.first().cloned(),
+                preview,
+            });
+        }
+        if items.is_empty() {
+            return Ok(None);
+        }
+
+        Ok(Some(MailEvent::NewMail {
+            account_id: account.id,
+            folder_id: folder.id,
+            account: account.settings.email.clone(),
+            messages: items,
+        }))
+    }
+
+    /// The start of a message's text. The message is downloaded for it and
+    /// kept, so opening it afterwards is instant. A preview is an extra: one
+    /// that cannot be had is left out, never an error.
+    async fn preview(
+        &self,
+        message: &MessageSummary,
+        path: &str,
+        session: &mut dyn IncomingSession,
+    ) -> Option<String> {
+        let raw = match self.db(|store| store.raw(message.id)) {
+            Ok(Some(raw)) => raw,
+            _ => {
+                let raw = session.fetch_raw(path, message.uid).await.ok()?;
+                let _ = self.db(|store| store.set_raw(message.id, &raw));
+                raw
+            }
+        };
+
+        mail_render::preview(&raw)
+    }
+
+    /// Takes in what arrived in the inbox after its newest cached message,
+    /// on the watcher's own connection. One command, so a notification does
+    /// not wait for a whole sync; the sync after it does the rest.
+    async fn take_arrivals(
+        &self,
+        account: &Account,
+        inbox: &Folder,
+        waiting: &mut dyn IncomingSession,
+    ) -> MailResult<()> {
+        let _writing = self.folder_lock(inbox.id)?.lock_owned().await;
+        let cached = self.db(|store| store.uids(inbox.id))?;
+        // A folder never synced is caught up by a sync, not announced.
+        let Some(newest) = cached.last().copied() else {
+            return Ok(());
+        };
+
+        let arrived = waiting.fetch_new(&inbox.path, newest).await?;
+        if arrived.is_empty() {
+            return Ok(());
+        }
+
+        let count = |value: usize| u32::try_from(value).unwrap_or(u32::MAX);
+        let unread = count(arrived.iter().filter(|remote| !remote.flags.seen).count());
+        let messages = self.db(|store| {
+            for remote in &arrived {
+                store.upsert_message(inbox.id, &to_new_message(remote))?;
+            }
+            let folder = store.folder(inbox.id)?;
+            store.set_folder_counts(
+                inbox.id,
+                folder.unread.saturating_add(unread),
+                folder.total.saturating_add(count(arrived.len())),
+            )?;
+
+            store.messages(inbox.id)
+        })?;
+        let uids: Vec<u32> = arrived.iter().map(|remote| remote.uid).collect();
+        let news = self.news(account, inbox, &uids, &messages, waiting).await?;
+
+        self.announce(MailEvent::FolderChanged {
+            account_id: account.id,
+            folder_id: inbox.id,
+        });
+        if let Some(news) = news {
+            self.announce(news);
+        }
+
+        Ok(())
+    }
+
+    // Watching
+
+    /// Keeps every account's inbox up to date for as long as it runs: new
+    /// mail is fetched as soon as the server says so (or within a minute
+    /// for servers that cannot), and `subscribe` hears about it. Follows
+    /// accounts being added and removed. Meant to be spawned once.
+    pub async fn watch(self: Arc<Self>) {
+        let mut running: HashMap<i64, JoinHandle<()>> = HashMap::new();
+        loop {
+            let ids: Vec<i64> = self
+                .list_accounts()
+                .map(|accounts| accounts.iter().map(|account| account.id).collect())
+                .unwrap_or_default();
+
+            running.retain(|id, task| {
+                let kept = ids.contains(id);
+                if !kept {
+                    task.abort();
+                }
+
+                kept
+            });
+            for id in ids {
+                running
+                    .entry(id)
+                    .or_insert_with(|| tokio::spawn(Arc::clone(&self).watch_account(id)));
+            }
+
+            self.accounts_changed.notified().await;
+        }
+    }
+
+    async fn watch_account(self: Arc<Self>, account_id: i64) {
+        let mut failures: u32 = 0;
+        loop {
+            if self.watch_inbox(account_id, &mut failures).await.is_err() {
+                let pause = RETRY_FIRST
+                    .saturating_mul(2_u32.saturating_pow(failures))
+                    .min(RETRY_LAST);
+                failures = failures.saturating_add(1);
+                tokio::time::sleep(pause).await;
+            }
+        }
+    }
+
+    /// Syncs the inbox, then waits for news on a connection of its own, over
+    /// and over, until something fails. A first sync that works counts as
+    /// working again (`failures`).
+    async fn watch_inbox(&self, account_id: i64, failures: &mut u32) -> MailResult<()> {
+        let account = self.db(|store| store.account(account_id))?;
+        let inbox = self
+            .list_folders(account_id)?
+            .into_iter()
+            .find(|folder| folder.role == FolderRole::Inbox && folder.selectable)
+            .ok_or_else(|| MailError::not_found("inbox"))?;
+
+        // Not the shared connection: waiting would keep it from every click.
+        let secret = self.secret(&account).await?;
+        let mut waiting = self
+            .connector
+            .connect_incoming(&account.settings.incoming, &secret)
+            .await
+            .map_err(|error| self.refused(account_id, error))?;
+
+        self.sync_folder(inbox.id, false).await?;
+        *failures = 0;
+        loop {
+            waiting.wait_for_change(&inbox.path, WATCH_LIMIT).await?;
+            self.take_arrivals(&account, &inbox, waiting.as_mut())
+                .await?;
+            // What else changed (read elsewhere, deleted, moved), the usual way.
+            self.sync_folder(inbox.id, false).await?;
+        }
     }
 
     async fn raw(&self, summary: &MessageSummary) -> MailResult<Vec<u8>> {
@@ -870,22 +1134,23 @@ impl Engine {
     // Settings
 
     pub fn settings(&self) -> MailResult<AppSettings> {
-        let default = AppSettings::default();
+        let stored = self.db(|store| store.settings())?;
 
-        self.db(|store| {
-            Ok(AppSettings {
-                sender_pictures: switch(store.setting(SENDER_PICTURES)?, default.sender_pictures),
-                remote_images: switch(store.setting(REMOTE_IMAGES)?, default.remote_images),
-            })
-        })
+        Ok(AppSettings::from_stored(|name| stored.get(name).cloned()))
     }
 
     pub fn set_settings(&self, settings: AppSettings) -> MailResult<()> {
-        let stored = |on: bool| if on { "on" } else { "off" };
+        settings.check()?;
 
         self.db(|store| {
-            store.set_setting(SENDER_PICTURES, stored(settings.sender_pictures))?;
-            store.set_setting(REMOTE_IMAGES, stored(settings.remote_images))
+            for (name, value) in settings.to_stored() {
+                match value {
+                    Some(value) => store.set_setting(name, &value)?,
+                    None => store.remove_setting(name)?,
+                }
+            }
+
+            Ok(())
         })
     }
 

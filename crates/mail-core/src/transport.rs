@@ -1,6 +1,8 @@
 //! Traits the engine uses to reach mail servers and the OS keychain. Real
 //! implementations live in other crates; tests use in-memory fakes.
 
+use std::time::Duration;
+
 use async_trait::async_trait;
 
 use crate::account::ServerSettings;
@@ -56,6 +58,9 @@ pub trait IncomingSession: Send {
     async fn folder_state(&mut self, folder: &str) -> MailResult<FolderState>;
     async fn fetch_headers(&mut self, folder: &str, uids: &[u32])
     -> MailResult<Vec<RemoteMessage>>;
+    /// The messages with a UID above `after`, the way `fetch_headers` gives
+    /// them: one command, without listing the whole folder first.
+    async fn fetch_new(&mut self, folder: &str, after: u32) -> MailResult<Vec<RemoteMessage>>;
     async fn fetch_flags(
         &mut self,
         folder: &str,
@@ -74,6 +79,11 @@ pub trait IncomingSession: Send {
     /// Removes the messages for good.
     async fn delete_messages(&mut self, folder: &str, uids: &[u32]) -> MailResult<()>;
     async fn append(&mut self, folder: &str, raw: &[u8], seen: bool) -> MailResult<()>;
+    /// Returns when something may have changed in `folder`, or after `limit`
+    /// at the latest. Servers that can push (IMAP IDLE) answer at once; the
+    /// others make the caller wait a short while, so asking again in a loop
+    /// polls. A return is a hint, not a promise that anything changed.
+    async fn wait_for_change(&mut self, folder: &str, limit: Duration) -> MailResult<()>;
 }
 
 pub struct Envelope<'a> {

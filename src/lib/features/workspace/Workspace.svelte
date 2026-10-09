@@ -1,7 +1,7 @@
 <script lang="ts">
     import { onMount } from 'svelte'
     import { toMailError } from '$lib/api'
-    import type { Account, Api, AppSettings, Attachment, Folder, MailError, MessageContent, MessageSummary, ReplyMode } from '$lib/api'
+    import type { Account, Api, AppSettings, Attachment, Folder, MailError, MailEvent, MessageContent, MessageSummary, NotificationTarget, ReplyMode } from '$lib/api'
     import Backdrop from '$lib/design/Backdrop.svelte'
     import Button from '$lib/design/Button.svelte'
     import GlassWindow from '$lib/design/GlassWindow.svelte'
@@ -10,6 +10,7 @@
     import Notice from '$lib/design/Notice.svelte'
     import Splitter from '$lib/design/Splitter.svelte'
     import AccountSetup from '$lib/features/accounts/AccountSetup.svelte'
+    import { newMailNotification } from '$lib/features/notifications/notification'
     import Settings from '$lib/features/settings/Settings.svelte'
     import { t } from '$lib/i18n'
     import AccountMenu from './AccountMenu.svelte'
@@ -57,8 +58,23 @@
     let removing = $state<Account | null>(null)
     let layout = $state<Layout>(loadLayout())
 
-    // What a fresh install does, until the real settings were loaded.
-    let settings = $state<AppSettings>({ senderPictures: true, remoteImages: false })
+    // Until the real settings were loaded: nothing is looked up or shown.
+    let settings = $state<AppSettings>({
+        senderPictures: false,
+        remoteImages: false,
+        notifications: {
+            enabled: false,
+            sound: false,
+            whileFocused: false,
+            duration: 'System',
+            seconds: 10,
+            title: '',
+            body: '',
+            previewLength: 90,
+            icon: 'App',
+            customIcon: null,
+        },
+    })
     let pictures = $state<Pictures>({})
     // Addresses already asked about, so a refreshed list asks nothing twice.
     // Not state on purpose: asking must not make the list ask again.
@@ -165,10 +181,37 @@
         }
     })
 
+    // Settings are written one after another: the core answers requests side
+    // by side, and an earlier write that finished last would undo a later one.
+    let settingsWrites: Promise<void> = Promise.resolve()
+
+    const saveSettings = (next: AppSettings): Promise<void> => {
+        const write = settingsWrites.then(() => api.setSettings(next))
+        settingsWrites = write.catch(() => undefined)
+
+        return write
+    }
+
     const changeSettings = (next: AppSettings) => guard(async () => {
         const before = settings
-        // The core first: pictures are asked for as soon as the switch shows on.
-        await api.setSettings(next)
+        // Notification choices show at once: their texts change with every
+        // key, and a field that waited for the core would lose what was typed.
+        // The rest waits: pictures are asked for as soon as the switch shows on.
+        const onlyNotifications = next.senderPictures === before.senderPictures
+            && next.remoteImages === before.remoteImages
+        if (onlyNotifications) {
+            settings = next
+        }
+        try {
+            await saveSettings(next)
+        } catch (caught) {
+            // What the core kept is what is shown.
+            settings = await api.settings()
+            throw caught
+        }
+        if (onlyNotifications) {
+            return
+        }
         if (next.senderPictures !== before.senderPictures) {
             asked = {}
             pictures = {}
@@ -374,8 +417,81 @@
         saveLayout(layout)
     }
 
+    // How long a notification waits for a sender's picture that is not known
+    // yet; after that it shows the initial.
+    const pictureWaitMs = 1000
+
+    const pictureOf = async (email: string): Promise<string | null> => {
+        const known = pictures[pictureKey(email)]
+        if (known !== undefined) {
+            return known
+        }
+        if (!settings.senderPictures) {
+            return null
+        }
+
+        const late = new Promise<null>((resolve) => setTimeout(() => resolve(null), pictureWaitMs))
+
+        return Promise.race([api.senderPicture(email), late])
+    }
+
+    const resetNotifications = () => guard(async () => {
+        const defaults = await api.defaultSettings()
+        await changeSettings({ ...settings, notifications: defaults.notifications })
+    })
+
+    // The core fetched something by itself (it watches every inbox): the
+    // lists are read again from the cache, which needs no server.
+    const heard = async (event: MailEvent) => {
+        if (accounts === null || !accounts.some((candidate) => candidate.id === event.accountId)) {
+            return
+        }
+
+        if (event.type === 'newMail') {
+            const notification = await newMailNotification(event, settings.notifications, pictureOf)
+            if (notification !== null) {
+                // Only an extra: a notification that cannot be shown costs nothing else.
+                api.notify(notification).catch(() => undefined)
+            }
+
+            return
+        }
+
+        await reloadFolders(event.accountId)
+        if (selectedFolder?.id === event.folderId) {
+            const fresh = await api.listMessages(event.folderId)
+            // The user may have moved on while the cache was read.
+            if (selectedFolder?.id === event.folderId) {
+                messages = fresh
+            }
+        }
+    }
+
+    // A click on a notification leads to the message it was about.
+    const openTarget = (target: NotificationTarget) => guard(async () => {
+        const folder = folders[target.accountId]?.find((candidate) => candidate.id === target.folderId)
+        if (folder === undefined) {
+            return
+        }
+
+        settingsOpen = false
+        accountId = target.accountId
+        await selectFolder(folder)
+        const message = messages.find((candidate) => candidate.id === target.messageId)
+        if (message !== undefined) {
+            await openMessage(message)
+        }
+    })
+
     onMount(() => {
         load()
+
+        const stopListening = api.onEvent((event) => {
+            heard(event).catch(() => undefined)
+        })
+        const stopOpening = api.onNotificationOpen((target) => {
+            openTarget(target)
+        })
 
         const timer = setInterval(() => {
             if (selectedFolder !== null && !syncing) {
@@ -385,7 +501,11 @@
             }
         }, refreshEveryMs)
 
-        return () => clearInterval(timer)
+        return () => {
+            clearInterval(timer)
+            stopListening()
+            stopOpening()
+        }
     })
 </script>
 
@@ -519,7 +639,7 @@
     {/snippet}
 
     {#if settingsOpen}
-        <Modal title={t('settings.title')}>
+        <Modal title={t('settings.title')} wide>
             <Settings
                 {accounts}
                 {settings}
@@ -527,6 +647,7 @@
                 onadd={() => addingAccount = true}
                 onremove={(next) => removing = next}
                 onclose={() => settingsOpen = false}
+                onresetnotifications={resetNotifications}
             />
         </Modal>
     {/if}

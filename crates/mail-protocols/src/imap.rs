@@ -1,7 +1,10 @@
 use std::fmt::Debug;
+use std::time::Duration;
 
 use async_imap::error::Error as ImapError;
-use async_imap::types::{Capability, Fetch, Flag as ImapFlag, Name, NameAttribute};
+use async_imap::types::{
+    Capability, Fetch, Flag as ImapFlag, Name, NameAttribute, UnsolicitedResponse,
+};
 use async_imap::{Authenticator, Client, Session};
 use async_trait::async_trait;
 use futures::TryStreamExt;
@@ -21,11 +24,17 @@ type BoxStream = Box<dyn Stream>;
 const CHUNK: usize = 100;
 
 pub(crate) struct ImapSession {
-    session: Session<BoxStream>,
+    /// Taken out while the connection idles, and gone for good when that
+    /// failed: a connection in an unknown state is never reused.
+    session: Option<Session<BoxStream>>,
     selected: Option<String>,
     can_move: bool,
     can_uid_expunge: bool,
+    can_idle: bool,
 }
+
+/// Servers without IDLE are asked again this often.
+const POLL: Duration = Duration::from_secs(60);
 
 fn imap_error(error: ImapError) -> MailError {
     let kind = match &error {
@@ -34,6 +43,20 @@ fn imap_error(error: ImapError) -> MailError {
     };
 
     MailError::new(kind, error.to_string())
+}
+
+/// A server that does not answer in time is treated as gone.
+async fn within<T>(
+    limit: Duration,
+    work: impl Future<Output = Result<T, ImapError>>,
+) -> MailResult<T> {
+    match tokio::time::timeout(limit, work).await {
+        Ok(result) => result.map_err(imap_error),
+        Err(_) => Err(MailError::new(
+            ErrorKind::Connect,
+            "the server stopped answering",
+        )),
+    }
 }
 
 fn uid_set(uids: &[u32]) -> String {
@@ -143,12 +166,14 @@ pub(crate) async fn connect(server: &ServerSettings, secret: &str) -> MailResult
     let has = |name: &str| capabilities.has(&Capability::Atom(name.to_string()));
     let can_move = has("MOVE");
     let can_uid_expunge = has("UIDPLUS");
+    let can_idle = has("IDLE");
 
     Ok(ImapSession {
-        session,
+        session: Some(session),
         selected: None,
         can_move,
         can_uid_expunge,
+        can_idle,
     })
 }
 
@@ -204,13 +229,19 @@ fn describe(name: &Name) -> RemoteFolder {
 }
 
 impl ImapSession {
+    fn live(&mut self) -> MailResult<&mut Session<BoxStream>> {
+        self.session
+            .as_mut()
+            .ok_or_else(|| MailError::new(ErrorKind::Connect, "the connection was lost"))
+    }
+
     async fn select(&mut self, folder: &str) -> MailResult<()> {
         if self.selected.as_deref() == Some(folder) {
             return Ok(());
         }
 
         self.selected = None;
-        self.session.select(folder).await.map_err(imap_error)?;
+        self.live()?.select(folder).await.map_err(imap_error)?;
         self.selected = Some(folder.to_string());
 
         Ok(())
@@ -219,7 +250,7 @@ impl ImapSession {
     async fn store(&mut self, uids: &[u32], change: &str) -> MailResult<()> {
         for chunk in uids.chunks(CHUNK) {
             let updates = self
-                .session
+                .live()?
                 .uid_store(uid_set(chunk), change)
                 .await
                 .map_err(imap_error)?;
@@ -229,11 +260,42 @@ impl ImapSession {
         Ok(())
     }
 
+    /// What the message list shows of the messages in `set`, in one command.
+    async fn fetch_summaries(&mut self, set: &str) -> MailResult<Vec<RemoteMessage>> {
+        // Only what the message list shows: whole header blocks are several
+        // times larger (signatures, routing) and were most of a sync.
+        let stream = self
+            .live()?
+            .uid_fetch(
+                set,
+                "(UID FLAGS RFC822.SIZE INTERNALDATE BODY.PEEK[HEADER.FIELDS (SUBJECT FROM TO CC DATE)])",
+            )
+            .await
+            .map_err(imap_error)?;
+        let fetched: Vec<Fetch> = stream.try_collect().await.map_err(imap_error)?;
+
+        Ok(fetched
+            .iter()
+            .filter_map(|fetch| {
+                Some(RemoteMessage {
+                    uid: fetch.uid?,
+                    flags: flags_of(fetch),
+                    size: fetch.size.unwrap_or(0),
+                    received: fetch
+                        .internal_date()
+                        .map(|date| date.timestamp())
+                        .unwrap_or(0),
+                    header: fetch.header().unwrap_or_default().to_vec(),
+                })
+            })
+            .collect())
+    }
+
     async fn fetch(&mut self, uids: &[u32], query: &str) -> MailResult<Vec<Fetch>> {
         let mut fetched = Vec::new();
         for chunk in uids.chunks(CHUNK) {
             let stream = self
-                .session
+                .live()?
                 .uid_fetch(uid_set(chunk), query)
                 .await
                 .map_err(imap_error)?;
@@ -248,13 +310,16 @@ impl ImapSession {
 #[async_trait]
 impl IncomingSession for ImapSession {
     async fn is_alive(&mut self) -> bool {
-        self.session.noop().await.is_ok()
+        match self.live() {
+            Ok(session) => session.noop().await.is_ok(),
+            Err(_) => false,
+        }
     }
 
     async fn list_folders(&mut self) -> MailResult<Vec<RemoteFolder>> {
         let names: Vec<Name> = {
             let stream = self
-                .session
+                .live()?
                 .list(Some(""), Some("*"))
                 .await
                 .map_err(imap_error)?;
@@ -267,7 +332,7 @@ impl IncomingSession for ImapSession {
                 continue;
             }
             // Counts are a nicety; a folder that refuses STATUS still shows up.
-            if let Ok(status) = self.session.status(&folder.path, "(MESSAGES UNSEEN)").await {
+            if let Ok(status) = self.live()?.status(&folder.path, "(MESSAGES UNSEEN)").await {
                 folder.total = status.exists;
                 folder.unread = status.unseen.unwrap_or(0);
             }
@@ -279,11 +344,11 @@ impl IncomingSession for ImapSession {
     async fn folder_state(&mut self, folder: &str) -> MailResult<FolderState> {
         // Always a fresh SELECT: its answer carries the current UID validity.
         self.selected = None;
-        let mailbox = self.session.select(folder).await.map_err(imap_error)?;
+        let mailbox = self.live()?.select(folder).await.map_err(imap_error)?;
         self.selected = Some(folder.to_string());
 
         let mut uids: Vec<u32> = self
-            .session
+            .live()?
             .uid_search("ALL")
             .await
             .map_err(imap_error)?
@@ -291,7 +356,7 @@ impl IncomingSession for ImapSession {
             .collect();
         uids.sort_unstable();
         let unread = self
-            .session
+            .live()?
             .uid_search("UNSEEN")
             .await
             .map_err(imap_error)?
@@ -310,29 +375,23 @@ impl IncomingSession for ImapSession {
         uids: &[u32],
     ) -> MailResult<Vec<RemoteMessage>> {
         self.select(folder).await?;
-        // Only what the message list shows: whole header blocks are several
-        // times larger (signatures, routing) and were most of a sync.
-        let fetched = self
-            .fetch(
-                uids,
-                "(UID FLAGS RFC822.SIZE INTERNALDATE BODY.PEEK[HEADER.FIELDS (SUBJECT FROM TO CC DATE)])",
-            )
-            .await?;
+        let mut fetched = Vec::new();
+        for chunk in uids.chunks(CHUNK) {
+            fetched.extend(self.fetch_summaries(&uid_set(chunk)).await?);
+        }
 
+        Ok(fetched)
+    }
+
+    async fn fetch_new(&mut self, folder: &str, after: u32) -> MailResult<Vec<RemoteMessage>> {
+        self.select(folder).await?;
+        let first = after.saturating_add(1);
+        let fetched = self.fetch_summaries(&format!("{first}:*")).await?;
+
+        // `n:*` always matches the last message, even one below `n`.
         Ok(fetched
-            .iter()
-            .filter_map(|fetch| {
-                Some(RemoteMessage {
-                    uid: fetch.uid?,
-                    flags: flags_of(fetch),
-                    size: fetch.size.unwrap_or(0),
-                    received: fetch
-                        .internal_date()
-                        .map(|date| date.timestamp())
-                        .unwrap_or(0),
-                    header: fetch.header().unwrap_or_default().to_vec(),
-                })
-            })
+            .into_iter()
+            .filter(|message| message.uid > after)
             .collect())
     }
 
@@ -384,7 +443,7 @@ impl IncomingSession for ImapSession {
 
         if self.can_move {
             for chunk in uids.chunks(CHUNK) {
-                self.session
+                self.live()?
                     .uid_mv(uid_set(chunk), target)
                     .await
                     .map_err(imap_error)?;
@@ -394,7 +453,7 @@ impl IncomingSession for ImapSession {
         }
 
         for chunk in uids.chunks(CHUNK) {
-            self.session
+            self.live()?
                 .uid_copy(uid_set(chunk), target)
                 .await
                 .map_err(imap_error)?;
@@ -410,14 +469,14 @@ impl IncomingSession for ImapSession {
         if self.can_uid_expunge {
             for chunk in uids.chunks(CHUNK) {
                 let expunged = self
-                    .session
+                    .live()?
                     .uid_expunge(uid_set(chunk))
                     .await
                     .map_err(imap_error)?;
                 expunged.try_collect::<Vec<_>>().await.map_err(imap_error)?;
             }
         } else {
-            let expunged = self.session.expunge().await.map_err(imap_error)?;
+            let expunged = self.live()?.expunge().await.map_err(imap_error)?;
             expunged.try_collect::<Vec<_>>().await.map_err(imap_error)?;
         }
 
@@ -427,10 +486,56 @@ impl IncomingSession for ImapSession {
     async fn append(&mut self, folder: &str, raw: &[u8], seen: bool) -> MailResult<()> {
         let flags = if seen { Some("(\\Seen)") } else { None };
 
-        self.session
+        self.live()?
             .append(folder, flags, None, raw)
             .await
             .map_err(imap_error)
+    }
+
+    async fn wait_for_change(&mut self, folder: &str, limit: Duration) -> MailResult<()> {
+        if !self.can_idle {
+            tokio::time::sleep(limit.min(POLL)).await;
+
+            return Ok(());
+        }
+
+        self.select(folder).await?;
+        // Mail that arrived since the last wait is told in the answer to the
+        // next command; idling first would only hear of it much later. The
+        // check costs one round trip, before the wait, not after the news.
+        self.live()?.noop().await.map_err(imap_error)?;
+        let mut changed = false;
+        while let Ok(news) = self.live()?.unsolicited_responses.try_recv() {
+            changed |= matches!(
+                news,
+                UnsolicitedResponse::Exists(_)
+                    | UnsolicitedResponse::Recent(_)
+                    | UnsolicitedResponse::Expunge(_)
+            );
+        }
+        if changed {
+            return Ok(());
+        }
+
+        let Some(session) = self.session.take() else {
+            return Err(MailError::new(
+                ErrorKind::Connect,
+                "the connection was lost",
+            ));
+        };
+
+        let mut idle = session.idle();
+        within(tls::TIMEOUT, idle.init()).await?;
+        // The stop source must outlive the wait: dropping it ends the wait.
+        let waited = {
+            let (wait, _stop) = idle.wait_with_timeout(limit);
+            wait.await
+        };
+        waited.map_err(imap_error)?;
+        // A connection that went away while idling would never answer.
+        self.session = Some(within(tls::TIMEOUT, idle.done()).await?);
+
+        Ok(())
     }
 }
 
@@ -553,6 +658,67 @@ mod tests {
 
         let raw = session.fetch_raw("INBOX", 5).await.unwrap();
         assert_eq!(raw, b"Subject: First\r\n\r\nBody of the first\r\n");
+    }
+
+    #[tokio::test]
+    async fn idle_returns_when_the_server_announces_a_message() {
+        let server = FakeImap::start().await;
+        let mut session = connect(&settings(server.port), "secret").await.unwrap();
+
+        // A long limit: only the server's announcement can end this in time.
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            session.wait_for_change("INBOX", Duration::from_secs(600)),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        let commands = server.commands();
+        assert!(commands.iter().any(|sent| sent == "IDLE"));
+        assert!(commands.iter().any(|sent| sent == "DONE"));
+        // The connection is usable again afterwards.
+        assert!(session.is_alive().await);
+        session.fetch_flags("INBOX", &[5]).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn mail_told_in_another_answer_ends_the_wait_without_idling() {
+        let server = FakeImap::start().await;
+        let mut session = connect(&settings(server.port), "secret").await.unwrap();
+        session.select("INBOX").await.unwrap();
+        server.deliver();
+
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            session.wait_for_change("INBOX", Duration::from_secs(600)),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+        assert!(!server.commands().iter().any(|sent| sent == "IDLE"));
+    }
+
+    #[tokio::test]
+    async fn asks_only_for_messages_above_the_newest_known() {
+        let server = FakeImap::start().await;
+        let mut session = connect(&settings(server.port), "secret").await.unwrap();
+
+        let new = session.fetch_new("INBOX", 5).await.unwrap();
+
+        assert_eq!(
+            new.iter().map(|message| message.uid).collect::<Vec<_>>(),
+            vec![9]
+        );
+        assert!(new[0].header.starts_with(b"Subject: Second"));
+        let commands = server.commands();
+        assert!(
+            commands
+                .iter()
+                .any(|sent| sent.starts_with("UID FETCH 6:* (UID FLAGS")),
+            "{commands:#?}"
+        );
     }
 
     #[tokio::test]

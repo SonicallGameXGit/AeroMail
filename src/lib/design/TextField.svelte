@@ -7,6 +7,10 @@
         placeholder?: string
         autofocus?: boolean
         invalid?: boolean
+        // A box for several lines of text.
+        multiline?: boolean
+        // A longer explanation under the field.
+        hint?: string
         oninput?: (value: string) => void
     }
 
@@ -18,10 +22,14 @@
         placeholder = '',
         autofocus = false,
         invalid = false,
+        multiline = false,
+        hint,
         oninput,
     }: Props = $props()
 
-    const focusOnMount = (node: HTMLInputElement) => {
+    const id = $props.id()
+
+    const focusOnMount = (node: HTMLInputElement | HTMLTextAreaElement) => {
         if (autofocus) {
             node.focus()
         }
@@ -30,18 +38,36 @@
 
 <label>
     <span>{label}</span>
-    <input
-        {type}
-        {inputmode}
-        {placeholder}
-        {value}
-        aria-invalid={invalid}
-        autocomplete="off"
-        autocapitalize="off"
-        spellcheck="false"
-        use:focusOnMount
-        oninput={(event) => oninput?.(event.currentTarget.value)}
-    />
+    {#if multiline}
+        <textarea
+            rows="3"
+            {placeholder}
+            {value}
+            aria-invalid={invalid}
+            aria-describedby={hint === undefined ? undefined : id}
+            autocomplete="off"
+            spellcheck="false"
+            use:focusOnMount
+            oninput={(event) => oninput?.(event.currentTarget.value)}
+        ></textarea>
+    {:else}
+        <input
+            {type}
+            {inputmode}
+            {placeholder}
+            {value}
+            aria-invalid={invalid}
+            aria-describedby={hint === undefined ? undefined : id}
+            autocomplete="off"
+            autocapitalize="off"
+            spellcheck="false"
+            use:focusOnMount
+            oninput={(event) => oninput?.(event.currentTarget.value)}
+        />
+    {/if}
+    {#if hint !== undefined}
+        <small {id}>{hint}</small>
+    {/if}
 </label>
 
 <style>
@@ -56,7 +82,8 @@
         color: var(--text-muted);
     }
 
-    input {
+    input,
+    textarea {
         width: 100%;
         min-height: 26px;
         padding: var(--space-1) var(--space-2);
@@ -68,12 +95,24 @@
         transition: box-shadow var(--motion-fast);
     }
 
-    input:focus-visible {
+    textarea {
+        resize: vertical;
+        font: inherit;
+    }
+
+    small {
+        font-size: var(--font-size-small);
+        color: var(--text-muted);
+    }
+
+    input:focus-visible,
+    textarea:focus-visible {
         outline: none;
         box-shadow: var(--field-inner-shadow), var(--focus-glow);
     }
 
-    input[aria-invalid='true'] {
+    input[aria-invalid='true'],
+    textarea[aria-invalid='true'] {
         border-color: var(--danger-border);
     }
 </style>

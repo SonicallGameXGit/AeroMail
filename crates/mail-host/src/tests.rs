@@ -11,7 +11,9 @@ use mail_engine::Engine;
 use mail_store::Store;
 use serde_json::{Value, json};
 
-use super::{dispatch, handle_line};
+use mail_core::mail::MailEvent;
+
+use super::{dispatch, event_line, handle_line};
 
 /// No server is reachable: every connection attempt fails.
 struct Offline;
@@ -237,12 +239,38 @@ async fn settings_and_sender_pictures_go_under_the_names_the_ui_uses() {
         ask().await,
         Ok(json!("data:image/svg+xml;base64,PHN2Zz48L3N2Zz4="))
     );
+    let notifications = json!({
+        "enabled": true,
+        "sound": true,
+        "whileFocused": false,
+        "duration": "System",
+        "seconds": 10,
+        "title": "{sender}",
+        "body": "{subject}\n{preview}",
+        "previewLength": 90,
+        "icon": "Sender",
+        "customIcon": null,
+    });
     assert_eq!(
         dispatch(&engine, "settings", Value::Null).await,
-        Ok(json!({ "senderPictures": true, "remoteImages": false }))
+        Ok(
+            json!({ "senderPictures": true, "remoteImages": false, "notifications": notifications })
+        )
     );
 
-    let changed = json!({ "senderPictures": false, "remoteImages": true });
+    let quiet = json!({
+        "enabled": false,
+        "sound": false,
+        "whileFocused": true,
+        "duration": "UntilDismissed",
+        "seconds": 30,
+        "title": "{subject}",
+        "body": "",
+        "previewLength": 40,
+        "icon": "None",
+        "customIcon": null,
+    });
+    let changed = json!({ "senderPictures": false, "remoteImages": true, "notifications": quiet });
     let off = dispatch(&engine, "set_settings", json!({ "settings": changed })).await;
     assert_eq!(off, Ok(Value::Null));
     assert_eq!(
@@ -250,4 +278,17 @@ async fn settings_and_sender_pictures_go_under_the_names_the_ui_uses() {
         Ok(changed)
     );
     assert_eq!(ask().await, Ok(Value::Null));
+}
+
+#[test]
+fn announcements_are_lines_without_an_id() {
+    let line = event_line(&MailEvent::FolderChanged {
+        account_id: 1,
+        folder_id: 2,
+    });
+
+    assert_eq!(
+        serde_json::from_str::<Value>(&line).unwrap(),
+        json!({ "event": { "type": "folderChanged", "accountId": 1, "folderId": 2 } })
+    );
 }

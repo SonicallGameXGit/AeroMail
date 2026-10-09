@@ -10,6 +10,9 @@ import type {
     Folder,
     FolderRole,
     MailError,
+    MailEvent,
+    NotificationRequest,
+    NotificationTarget,
     MessageContent,
     MessageSummary,
     OutgoingMessage,
@@ -102,6 +105,45 @@ export type FakeState = {
     settings: AppSettings
     // Messages whose content brings remote images.
     remoteMessages: number[]
+    // System notifications that were asked for.
+    notified: NotificationRequest[]
+    // Who listens for what the core announces / for clicks on notifications.
+    listeners: ((event: MailEvent) => void)[]
+    openListeners: ((target: NotificationTarget) => void)[]
+}
+
+// Plays what the core would announce by itself.
+export const announce = (state: FakeState, event: MailEvent) => {
+    for (const listener of state.listeners) {
+        listener(event)
+    }
+}
+
+// Plays a click on a notification.
+export const clickNotification = (state: FakeState, target: NotificationTarget) => {
+    for (const listener of state.openListeners) {
+        listener(target)
+    }
+}
+
+// What the core has for a fresh install.
+export const defaultSettings = (): AppSettings => {
+    return {
+        senderPictures: true,
+        remoteImages: false,
+        notifications: {
+            enabled: true,
+            sound: true,
+            whileFocused: false,
+            duration: 'System',
+            seconds: 10,
+            title: '{sender}',
+            body: '{subject}\n{preview}',
+            previewLength: 90,
+            icon: 'Sender',
+            customIcon: null,
+        },
+    }
 }
 
 const fail = (kind: MailError['kind'], detail: string, server: MailError['server'] = null): MailError => {
@@ -156,8 +198,11 @@ export const seededState = (): FakeState => {
         opened: [],
         pictures: {},
         pictureRequests: [],
-        settings: { senderPictures: true, remoteImages: false },
+        settings: defaultSettings(),
         remoteMessages: [],
+        notified: [],
+        listeners: [],
+        openListeners: [],
     }
 }
 
@@ -170,8 +215,11 @@ export const emptyState = (): FakeState => {
         opened: [],
         pictures: {},
         pictureRequests: [],
-        settings: { senderPictures: true, remoteImages: false },
+        settings: defaultSettings(),
         remoteMessages: [],
+        notified: [],
+        listeners: [],
+        openListeners: [],
     }
 }
 
@@ -369,6 +417,25 @@ export const createFakeApi = (state: FakeState = emptyState(), overrides: Partia
         settings: async () => state.settings,
         setSettings: async (settings) => {
             state.settings = settings
+        },
+        defaultSettings: async () => defaultSettings(),
+
+        onEvent: (listener) => {
+            state.listeners = [...state.listeners, listener]
+
+            return () => {
+                state.listeners = state.listeners.filter((candidate) => candidate !== listener)
+            }
+        },
+        notify: async (notification) => {
+            state.notified = [...state.notified, notification]
+        },
+        onNotificationOpen: (listener) => {
+            state.openListeners = [...state.openListeners, listener]
+
+            return () => {
+                state.openListeners = state.openListeners.filter((candidate) => candidate !== listener)
+            }
         },
         ...overrides,
     }

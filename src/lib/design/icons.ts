@@ -1,8 +1,10 @@
 // Every picture `Icon.svelte` can draw.
 export type IconName =
+    | 'account'
     | 'all'
     | 'archive'
     | 'attachment'
+    | 'bell'
     | 'check'
     | 'chevron'
     | 'close'
@@ -21,6 +23,7 @@ export type IconName =
     | 'mailUnread'
     | 'move'
     | 'plus'
+    | 'privacy'
     | 'refresh'
     | 'reply'
     | 'replyAll'

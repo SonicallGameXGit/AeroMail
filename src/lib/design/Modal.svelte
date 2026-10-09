@@ -24,6 +24,9 @@
         inset: 0;
         z-index: 10;
         display: grid;
+        /* One cell the size of the screen: a window taller than that scrolls
+           inside instead of running off the bottom. */
+        grid-template: minmax(0, 1fr) / minmax(0, 1fr);
         place-items: center;
         padding: var(--space-5);
         background: var(--overlay);

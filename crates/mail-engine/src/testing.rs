@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use mail_core::account::{
@@ -15,7 +16,7 @@ use mail_core::transport::{
     Connector, Envelope, Flag, FolderState, IncomingSession, LogoSource, PendingSignIn,
     RemoteFolder, RemoteMessage, SecretStore, SignInFlow,
 };
-use tokio::sync::oneshot;
+use tokio::sync::{Notify, oneshot};
 
 pub const PASSWORD: &str = "secret";
 
@@ -55,6 +56,12 @@ pub struct Remote {
     pub access_tokens: Vec<String>,
     /// What each connection and each sent message signed in with.
     pub secrets_used: Vec<String>,
+    /// Ends the wait of a connection that listens for news; see `change`.
+    pub news: Arc<Notify>,
+    /// How often only the new messages were asked for.
+    pub fetched_new: u32,
+    /// How often the whole folder was listed.
+    pub listed: u32,
 }
 
 pub type SharedRemote = Arc<Mutex<Remote>>;
@@ -188,6 +195,7 @@ impl IncomingSession for FakeSession {
     }
 
     async fn folder_state(&mut self, folder: &str) -> MailResult<FolderState> {
+        self.remote.lock().unwrap().listed += 1;
         self.with_folder(folder, |folder| FolderState {
             uid_validity: folder.uid_validity,
             uids: folder.messages.iter().map(|message| message.uid).collect(),
@@ -218,6 +226,20 @@ impl IncomingSession for FakeSession {
                 })
                 .collect()
         })
+    }
+
+    async fn fetch_new(&mut self, folder: &str, after: u32) -> MailResult<Vec<RemoteMessage>> {
+        self.remote.lock().unwrap().fetched_new += 1;
+        let uids: Vec<u32> = self.with_folder(folder, |folder| {
+            folder
+                .messages
+                .iter()
+                .map(|message| message.uid)
+                .filter(|uid| *uid > after)
+                .collect()
+        })?;
+
+        self.fetch_headers(folder, &uids).await
     }
 
     async fn fetch_flags(
@@ -295,6 +317,13 @@ impl IncomingSession for FakeSession {
                 .messages
                 .retain(|message| !uids.contains(&message.uid));
         })
+    }
+
+    async fn wait_for_change(&mut self, _: &str, limit: Duration) -> MailResult<()> {
+        let news = Arc::clone(&self.remote.lock().unwrap().news);
+        let _ = tokio::time::timeout(limit, news.notified()).await;
+
+        Ok(())
     }
 
     async fn append(&mut self, folder: &str, raw: &[u8], seen: bool) -> MailResult<()> {

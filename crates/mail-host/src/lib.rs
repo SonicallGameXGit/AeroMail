@@ -8,7 +8,7 @@ mod tests;
 use mail_core::account::{AccountSettings, Protocol, Security};
 use mail_core::draft::ReplyMode;
 use mail_core::error::{ErrorKind, MailError};
-use mail_core::mail::OutgoingMessage;
+use mail_core::mail::{MailEvent, OutgoingMessage};
 use mail_core::settings::AppSettings;
 use mail_core::transport::Flag;
 use mail_engine::Engine;
@@ -263,6 +263,7 @@ pub async fn dispatch(engine: &Engine, command: &str, params: Value) -> Result<V
             reply(engine.sender_picture(&email).await)
         }
         "settings" => reply(engine.settings()),
+        "default_settings" => Ok(encode(&AppSettings::default())),
         "set_settings" => {
             let NewSettings { settings } = args(params)?;
             reply(engine.set_settings(settings))
@@ -272,6 +273,12 @@ pub async fn dispatch(engine: &Engine, command: &str, params: Value) -> Result<V
             format!("unknown command: {command}"),
         ))),
     }
+}
+
+/// An announcement of the engine as one line: `{ "event": ... }`. It has no
+/// `id`, which is how a shell tells it from the answer to a request.
+pub fn event_line(event: &MailEvent) -> String {
+    json!({ "event": encode(event) }).to_string()
 }
 
 /// Answers one request line with one response line: `{ id, ok, value }` or

@@ -13,6 +13,11 @@ export type Reply =
 
 export type Core = {
     call: (command: string, params: unknown) => Promise<Reply>
+    // What the core announces by itself (new mail, ...), exactly as it sent it.
+    onEvent: (listener: (event: unknown) => void) => void
+    // Starts the core now. It watches the mailboxes for new mail by itself,
+    // so it cannot wait for the first call as it otherwise would.
+    start: () => void
     stop: () => void
 }
 
@@ -20,6 +25,22 @@ type CoreProcess = ChildProcessByStdio<Writable, Readable, null>
 
 const failure = (detail: string): Reply => {
     return { ok: false, error: { kind: 'Protocol', server: null, detail } }
+}
+
+// A line of the core is an answer (it has an `id`) or an announcement.
+const parseEvent = (line: string): unknown => {
+    let parsed: unknown
+    try {
+        parsed = JSON.parse(line)
+    } catch {
+        return undefined
+    }
+
+    if (typeof parsed !== 'object' || parsed === null || 'id' in parsed || !('event' in parsed)) {
+        return undefined
+    }
+
+    return parsed.event
 }
 
 const parseResponse = (line: string): { id: number, reply: Reply } | null => {
@@ -48,6 +69,7 @@ export const createCore = (binary: string, args: string[]): Core => {
     let child: CoreProcess | null = null
     let nextId = 1
     const pending = new Map<number, (reply: Reply) => void>()
+    const listeners: ((event: unknown) => void)[] = []
 
     const failPending = (detail: string) => {
         for (const resolve of pending.values()) {
@@ -72,6 +94,15 @@ export const createCore = (binary: string, args: string[]): Core => {
         started.stdin.on('error', () => undefined)
 
         createInterface({ input: started.stdout }).on('line', (line) => {
+            const event = parseEvent(line)
+            if (event !== undefined) {
+                for (const listener of listeners) {
+                    listener(event)
+                }
+
+                return
+            }
+
             const response = parseResponse(line)
             if (response === null) {
                 return
@@ -98,6 +129,14 @@ export const createCore = (binary: string, args: string[]): Core => {
             pending.set(id, resolve)
             child.stdin.write(JSON.stringify({ id, command, params }) + '\n')
         }),
+        onEvent: (listener) => {
+            listeners.push(listener)
+        },
+        start: () => {
+            if (child === null) {
+                child = start()
+            }
+        },
         // The core ends by itself when its stdin closes.
         stop: () => {
             if (child !== null) {

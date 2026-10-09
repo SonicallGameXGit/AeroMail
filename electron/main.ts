@@ -6,6 +6,7 @@ import path from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { app, BrowserWindow, dialog, ipcMain, Menu, net, protocol, shell } from 'electron'
 import { createCore, type Reply } from './core.js'
+import { parseNotification, showNotification } from './notifications.js'
 
 // The built UI is served from app://mailclient/ instead of file://, so its
 // absolute paths work and it gets a real origin.
@@ -31,6 +32,8 @@ const coreBinary = (): string => {
 }
 
 const core = createCore(coreBinary(), dataDirectory === undefined ? [] : ['--data-dir', dataDirectory])
+
+const iconFile = (): string => path.join(app.getAppPath(), 'electron', 'icons', 'icon.png')
 
 const failure = (kind: string, detail: string): Reply => {
     return { ok: false, error: { kind, server: null, detail } }
@@ -65,7 +68,7 @@ const createWindow = (): BrowserWindow => {
         height: 760,
         minWidth: 720,
         minHeight: 480,
-        icon: path.join(app.getAppPath(), 'electron', 'icons', 'icon.png'),
+        icon: iconFile(),
         autoHideMenuBar: true,
         webPreferences: {
             preload: path.join(import.meta.dirname, 'preload.cjs'),
@@ -109,6 +112,19 @@ const registerHandlers = () => {
         return saved.ok ? { ok: true, value: true } : saved
     })
 
+    ipcMain.handle('shell:notify', (event, request: unknown): Reply => {
+        const parsed = parseNotification(request)
+        const window = BrowserWindow.fromWebContents(event.sender)
+        if (parsed === null || window === null) {
+            return failure('Invalid', 'this notification cannot be shown')
+        }
+        showNotification(window, parsed, iconFile(), (target) => {
+            window.webContents.send('shell:notification-open', target)
+        })
+
+        return { ok: true, value: null }
+    })
+
     ipcMain.handle('shell:open-external', async (_event, url: unknown): Promise<Reply> => {
         if (typeof url !== 'string' || !URL.canParse(url) || !externalSchemes.includes(new URL(url).protocol)) {
             return failure('Invalid', 'this link cannot be opened')
@@ -143,8 +159,16 @@ if (app.requestSingleInstanceLock()) {
         if (app.isPackaged && process.platform !== 'darwin') {
             Menu.setApplicationMenu(null)
         }
+        // Windows shows no notification of an app without this name.
+        app.setAppUserModelId('app.mailclient.desktop')
         serveUi()
         registerHandlers()
+        core.onEvent((event) => {
+            for (const window of BrowserWindow.getAllWindows()) {
+                window.webContents.send('core:event', event)
+            }
+        })
+        core.start()
         createWindow()
     })
 } else {

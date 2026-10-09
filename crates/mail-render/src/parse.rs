@@ -177,6 +177,48 @@ pub fn render(raw: &[u8], allow_remote: bool) -> MailResult<Rendered> {
     })
 }
 
+/// The most a preview holds; notifications show a part of it.
+const PREVIEW_LIMIT: usize = 600;
+
+/// Characters that take no room: newsletters fill their hidden preheader
+/// with them so that mail apps show nothing after the visible teaser.
+fn is_invisible(character: char) -> bool {
+    matches!(
+        character,
+        '\u{00ad}' | '\u{034f}' | '\u{200b}'..='\u{200f}' | '\u{2060}' | '\u{feff}'
+    )
+}
+
+/// The start of what the message says, on one line: quoted text and the
+/// signature left out, every run of spaces and line breaks made one space.
+/// `None` for a message without any text.
+pub fn preview(raw: &[u8]) -> Option<String> {
+    let message = MessageParser::default().parse(raw)?;
+    let text = message.body_text(0)?;
+
+    let mut words: Vec<&str> = Vec::new();
+    for line in text.lines() {
+        // The usual signature separator; what follows is not the message.
+        if line == "-- " {
+            break;
+        }
+        if line.trim_start().starts_with('>') {
+            continue;
+        }
+        words.extend(line.split_whitespace());
+    }
+
+    let joined: String = words
+        .join(" ")
+        .chars()
+        .filter(|character| !is_invisible(*character))
+        .collect();
+    let single: Vec<&str> = joined.split_whitespace().collect();
+    let preview: String = single.join(" ").chars().take(PREVIEW_LIMIT).collect();
+
+    Some(preview).filter(|preview| !preview.is_empty())
+}
+
 /// The attachment at `index` with its bytes.
 pub fn attachment(raw: &[u8], index: u32) -> MailResult<(Attachment, Vec<u8>)> {
     let message = MessageParser::default().parse(raw).ok_or_else(unreadable)?;
@@ -314,6 +356,30 @@ JVBERi0xLjQ=\r\n\
         assert!(html.contains("font-size: 40px; color: #191C1F;\">Build a savings habit</h1>"));
         assert!(html.contains("<img src=\"data:,\" width=\"1\" height=\"1\" alt=\"\">"));
         assert!(rendered.remote_content_blocked);
+    }
+
+    #[test]
+    fn a_preview_is_the_start_of_the_text_on_one_line() {
+        let raw = b"From: a@example.com\r\nSubject: Hi\r\n\r\nHello  there,\r\n\r\nsee you\tat\r\nnoon.\r\n\r\nOn Monday Bob wrote:\r\n> old text\r\n-- \r\nAnn's signature\r\n";
+
+        assert_eq!(
+            preview(raw).as_deref(),
+            Some("Hello there, see you at noon. On Monday Bob wrote:")
+        );
+    }
+
+    #[test]
+    fn a_preview_of_html_mail_is_its_text() {
+        let raw = b"From: a@example.com\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<html><head><style>p { color: red }</style></head><body><p>Your\xe2\x80\x8c \xcd\x8f order</p><p>has <b>shipped</b></p></body></html>\r\n";
+
+        assert_eq!(preview(raw).as_deref(), Some("Your order has shipped"));
+    }
+
+    #[test]
+    fn a_message_without_text_has_no_preview() {
+        let raw = b"From: a@example.com\r\nSubject: Empty\r\n\r\n \r\n";
+
+        assert_eq!(preview(raw), None);
     }
 
     #[test]

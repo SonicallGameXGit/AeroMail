@@ -10,10 +10,11 @@ use std::sync::Arc;
 
 use mail_core::error::{ErrorKind, MailError, MailResult};
 use mail_engine::Engine;
-use mail_host::handle_line;
+use mail_host::{event_line, handle_line};
 use mail_protocols::{NetConnector, NetLogos, NetSignIn};
 use mail_store::Store;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc;
 
 /// Same folder name as the keychain service, so the two stay together.
@@ -76,6 +77,24 @@ async fn main() -> ExitCode {
             }
         }
     });
+
+    // What the engine finds out by itself goes out as `{ "event": ... }`
+    // lines between the answers.
+    let mut events = engine.subscribe();
+    let announcements = responses.clone();
+    tokio::spawn(async move {
+        loop {
+            match events.recv().await {
+                Ok(event) => {
+                    let _ = announcements.send(event_line(&event));
+                }
+                // Missed events only said "read the cache again".
+                Err(RecvError::Lagged(_)) => {}
+                Err(RecvError::Closed) => break,
+            }
+        }
+    });
+    tokio::spawn(Arc::clone(&engine).watch());
 
     let mut lines = BufReader::new(tokio::io::stdin()).lines();
     while let Ok(Some(line)) = lines.next_line().await {

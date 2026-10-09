@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { page, userEvent } from 'vitest/browser'
 import { render } from 'vitest-browser-svelte'
-import { createFakeApi, emptyState, fakePassword, guessDetection, seededState } from '$lib/features/accounts/fakeApi'
+import { announce, clickNotification, createFakeApi, defaultSettings, emptyState, fakePassword, guessDetection, seededState } from '$lib/features/accounts/fakeApi'
 import '$lib/design/base.css'
 import Workspace from './Workspace.svelte'
 
@@ -18,9 +18,11 @@ const folder = (name: string) => page.getByRole('navigation').getByRole('button'
 const pixel = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=='
 const pictureOf = (subject: string) => row(subject).element().querySelector('img')
 const toolbar = () => page.getByRole('toolbar', { name: 'Message actions' })
-const openSettings = async () => {
+// The window remembers the category opened last, so each test names its own.
+const openSettings = async (category: 'Accounts' | 'Privacy' | 'Notifications' = 'Accounts') => {
     await page.getByRole('button', { name: /^Account: / }).click()
     await page.getByRole('menuitem', { name: 'Settings' }).click()
+    await page.getByRole('tab', { name: category }).click()
 }
 const settings = () => page.getByRole('dialog', { name: 'Settings' })
 
@@ -293,7 +295,7 @@ describe('Workspace', () => {
         render(Workspace, { api: createFakeApi(state) })
         await expect.poll(() => pictureOf('Quarterly report')).not.toBeNull()
 
-        await openSettings()
+        await openSettings('Privacy')
         await page.getByRole('checkbox', { name: 'Show sender pictures' }).click()
         await page.getByRole('button', { name: 'Done' }).click()
 
@@ -304,7 +306,7 @@ describe('Workspace', () => {
         await expect.element(row('Quarterly report')).toHaveTextContent('B')
         expect(state.pictureRequests.length).toBe(before)
 
-        await openSettings()
+        await openSettings('Privacy')
         await expect.element(page.getByRole('checkbox', { name: 'Show sender pictures' })).not.toBeChecked()
         await page.getByRole('checkbox', { name: 'Show sender pictures' }).click()
         await expect.poll(() => pictureOf('Quarterly report')).not.toBeNull()
@@ -328,18 +330,18 @@ describe('Workspace', () => {
         await row('Lunch on Friday?').click()
         await expect.element(hidden).toBeInTheDocument()
 
-        await openSettings()
+        await openSettings('Privacy')
         await page.getByRole('checkbox', { name: 'Always show remote images' }).click()
         await page.getByRole('button', { name: 'Done' }).click()
         await expect.element(hidden).not.toBeInTheDocument()
-        expect(state.settings).toEqual({ senderPictures: true, remoteImages: true })
+        expect(state.settings).toEqual({ ...defaultSettings(), remoteImages: true })
         expect(policy()).toContain('img-src data: http: https:"')
 
         await row('Quarterly report').click()
         await expect.element(page.getByRole('heading', { name: 'Quarterly report' })).toBeInTheDocument()
         await expect.element(hidden).not.toBeInTheDocument()
 
-        await openSettings()
+        await openSettings('Privacy')
         await page.getByRole('checkbox', { name: 'Always show remote images' }).click()
         await expect.element(hidden).toBeInTheDocument()
     })
@@ -351,7 +353,7 @@ describe('Workspace', () => {
             },
         })
 
-        await openSettings()
+        await openSettings('Privacy')
         await page.getByRole('checkbox', { name: 'Always show remote images' }).click()
 
         await expect.element(page.getByRole('alert')).toHaveTextContent('disk full')
@@ -383,5 +385,181 @@ describe('Workspace', () => {
         await frame.getByRole('link', { name: 'Open the report' }).click()
 
         await expect.poll(() => state.opened).toEqual(['https://example.com/report'])
+    })
+
+    it('shows mail the core fetched by itself, without a refresh', async () => {
+        const state = start()
+        await expect.element(row('Lunch on Friday?')).toBeInTheDocument()
+
+        state.messages = [
+            {
+                id: 12,
+                folderId: 1,
+                uid: 12,
+                subject: 'Just arrived',
+                from: [{ name: 'Cid', email: 'cid@example.com' }],
+                to: [],
+                cc: [],
+                date: 1_700_000_012,
+                flags: { seen: false, flagged: false, answered: false },
+                size: 100,
+            },
+            ...state.messages,
+        ]
+        announce(state, { type: 'folderChanged', accountId: 1, folderId: 1 })
+
+        await expect.element(row('Just arrived')).toBeInTheDocument()
+        await expect.element(folder('Inbox')).toHaveTextContent('2')
+    })
+
+    it('asks the system for a notification with the start of the message and the sender\'s face', async () => {
+        const state = start()
+        await expect.element(row('Lunch on Friday?')).toBeInTheDocument()
+
+        announce(state, {
+            type: 'newMail',
+            accountId: 1,
+            folderId: 1,
+            account: 'john@gmail.com',
+            messages: [
+                {
+                    id: 10,
+                    subject: 'Quarterly report',
+                    from: { name: 'Bob', email: 'bob@example.com' },
+                    preview: 'The numbers for the third quarter are in and they look better than we expected in spring, mostly thanks to the new customers.',
+                },
+            ],
+        })
+
+        await expect.poll(() => state.notified.length).toBe(1)
+        const [notification] = state.notified
+        expect(notification?.title).toBe('Bob')
+        expect(notification?.body).toBe('Quarterly report\nThe numbers for the third quarter are in and they look better than we expected in spring…')
+        expect(notification?.icon.kind).toBe('image')
+        expect(notification?.target).toEqual({ accountId: 1, folderId: 1, messageId: 10 })
+        expect(notification?.sound).toBe(true)
+    })
+
+    it('shows the notification the way the settings say', async () => {
+        const state = start()
+        await expect.element(row('Lunch on Friday?')).toBeInTheDocument()
+        await openSettings('Notifications')
+
+        await settings().getByRole('button', { name: 'Customize the notification' }).click()
+        await settings().getByRole('combobox', { name: 'Title' }).selectOptions('Subject')
+        await settings().getByRole('combobox', { name: 'Text', exact: true }).selectOptions('Your own text…')
+        const own = settings().getByRole('textbox', { name: 'Your own text' })
+        await own.fill('New mail for')
+        await settings().getByRole('button', { name: 'Insert Account' }).click()
+        await settings().getByRole('combobox', { name: 'Picture' }).selectOptions('No picture')
+        await settings().getByRole('combobox', { name: 'Stays on screen' }).selectOptions('For a set time')
+        await settings().getByRole('textbox', { name: 'Seconds' }).fill('25')
+        await settings().getByRole('checkbox', { name: 'Play a sound' }).click()
+
+        // The sample in the settings shows it before any mail arrives.
+        await expect.element(page.getByTestId('notification-sample')).toHaveTextContent('Lunch on Friday? New mail for you@example.com')
+
+        announce(state, {
+            type: 'newMail',
+            accountId: 1,
+            folderId: 1,
+            account: 'john@gmail.com',
+            messages: [{ id: 10, subject: 'Quarterly report', from: { name: 'Bob', email: 'bob@example.com' }, preview: null }],
+        })
+
+        await expect.poll(() => state.notified.length).toBe(1)
+        expect(state.notified[0]).toEqual({
+            title: 'Quarterly report',
+            body: 'New mail for john@gmail.com',
+            icon: { kind: 'none' },
+            sound: false,
+            duration: 'Custom',
+            seconds: 25,
+            whileFocused: false,
+            target: { accountId: 1, folderId: 1, messageId: 10 },
+        })
+    })
+
+    it('keeps a number that is out of range from being saved, and restores the defaults', async () => {
+        const state = start()
+        await openSettings('Notifications')
+        await settings().getByRole('button', { name: 'Customize the notification' }).click()
+
+        const length = settings().getByRole('textbox', { name: 'Characters of the message to show' })
+        await length.fill('3')
+        await expect.element(length).toHaveAttribute('aria-invalid', 'true')
+        expect(state.settings.notifications.previewLength).toBe(90)
+        await length.fill('40')
+        expect(state.settings.notifications.previewLength).toBe(40)
+
+        await settings().getByRole('combobox', { name: 'Title' }).selectOptions('Sender\'s address')
+        await settings().getByRole('button', { name: 'Restore the defaults' }).click()
+
+        await expect.element(settings().getByRole('combobox', { name: 'Title' })).toHaveValue('sender')
+        expect(state.settings.notifications.previewLength).toBe(90)
+        expect(state.settings.notifications.title).toBe('{sender}')
+    })
+
+    it('takes a picture of the user\'s own for notifications', async () => {
+        const state = start()
+        await openSettings('Notifications')
+        await settings().getByRole('button', { name: 'Customize the notification' }).click()
+        await settings().getByRole('combobox', { name: 'Picture' }).selectOptions('A picture of your own')
+
+        const pixel = Uint8Array.from(atob('R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=='), (character) => character.charCodeAt(0))
+        await page.getByTestId('notification-picture').upload(new File([pixel], 'me.gif', { type: 'image/gif' }))
+
+        await expect.poll(() => state.settings.notifications.customIcon?.startsWith('data:image/png;base64,')).toBe(true)
+        expect(state.settings.notifications.icon).toBe('Custom')
+    })
+
+    it('opens the message when its notification is clicked', async () => {
+        const state = start()
+        await expect.element(folder('Inbox')).toBeInTheDocument()
+        await folder('Sent').click()
+
+        clickNotification(state, { accountId: 1, folderId: 1, messageId: 10 })
+
+        await expect.element(page.getByRole('heading', { name: 'Quarterly report' })).toBeInTheDocument()
+    })
+
+    it('turns notifications off in the settings', async () => {
+        const state = start()
+
+        await openSettings('Notifications')
+        await settings().getByRole('checkbox', { name: 'Notify about new mail' }).click()
+
+        expect(state.settings.notifications.enabled).toBe(false)
+        // The rest of it is out of the way while it is off.
+        await expect.element(settings().getByRole('checkbox', { name: 'Play a sound' })).not.toBeInTheDocument()
+    })
+
+    it('shows one category of the settings at a time, chosen from the list beside it', async () => {
+        start()
+        await openSettings('Accounts')
+
+        const tab = (name: string) => settings().getByRole('tab', { name })
+        await expect.element(tab('Accounts')).toHaveAttribute('aria-selected', 'true')
+        await expect.element(settings().getByRole('tabpanel', { name: 'Accounts' })).toBeInTheDocument()
+        await expect.element(settings().getByRole('checkbox', { name: 'Show sender pictures' })).not.toBeInTheDocument()
+
+        await tab('Privacy').click()
+        await expect.element(settings().getByRole('checkbox', { name: 'Show sender pictures' })).toBeInTheDocument()
+        await expect.element(settings().getByRole('button', { name: 'Add account' })).not.toBeInTheDocument()
+
+        // The keyboard walks the list as well.
+        await userEvent.keyboard('{ArrowDown}')
+        await expect.element(tab('Notifications')).toHaveAttribute('aria-selected', 'true')
+        await expect.element(tab('Notifications')).toHaveFocus()
+        await expect.element(settings().getByRole('checkbox', { name: 'Notify about new mail' })).toBeInTheDocument()
+        await userEvent.keyboard('{ArrowDown}')
+        await expect.element(tab('Accounts')).toHaveAttribute('aria-selected', 'true')
+
+        // Closed and opened again, it is where it was left.
+        await tab('Privacy').click()
+        await settings().getByRole('button', { name: 'Done' }).click()
+        await page.getByRole('button', { name: /^Account: / }).click()
+        await page.getByRole('menuitem', { name: 'Settings' }).click()
+        await expect.element(tab('Privacy')).toHaveAttribute('aria-selected', 'true')
     })
 })

@@ -3,6 +3,7 @@
 //!
 //! Secrets never come here; they live in the OS keychain.
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use mail_core::account::AccountSettings;
@@ -512,6 +513,27 @@ impl Store {
         Ok(())
     }
 
+    pub fn remove_setting(&self, name: &str) -> MailResult<()> {
+        self.connection
+            .execute("DELETE FROM settings WHERE name = ?1", params![name])
+            .map_err(storage)?;
+
+        Ok(())
+    }
+
+    /// Every stored setting by name.
+    pub fn settings(&self) -> MailResult<HashMap<String, String>> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT name, value FROM settings")
+            .map_err(storage)?;
+        let rows = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(storage)?;
+
+        rows.collect::<Result<_, _>>().map_err(storage)
+    }
+
     // Sender pictures
 
     pub fn logo(&self, domain: &str) -> MailResult<Option<CachedLogo>> {
@@ -717,6 +739,12 @@ mod tests {
             store.setting("sender_pictures").unwrap().as_deref(),
             Some("on")
         );
+
+        store.set_setting("notification_title", "{sender}").unwrap();
+        assert_eq!(store.settings().unwrap().len(), 2);
+        store.remove_setting("notification_title").unwrap();
+        store.remove_setting("never_written").unwrap();
+        assert_eq!(store.setting("notification_title").unwrap(), None);
     }
 
     #[test]

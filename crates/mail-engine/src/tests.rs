@@ -3,7 +3,7 @@ use std::sync::Arc;
 use mail_core::account::ServerRole;
 use mail_core::draft::ReplyMode;
 use mail_core::error::ErrorKind;
-use mail_core::mail::{Account, Folder, FolderRole, MessageContent, OutgoingMessage};
+use mail_core::mail::{Account, Folder, FolderRole, MailEvent, MessageContent, OutgoingMessage};
 use mail_core::settings::AppSettings;
 use mail_core::transport::Flag;
 use mail_store::Store;
@@ -1060,9 +1060,9 @@ async fn turned_off_nothing_is_asked_and_it_can_be_turned_on_again() {
 
     let off = AppSettings {
         sender_pictures: false,
-        ..on
+        ..on.clone()
     };
-    world.engine.set_settings(off).unwrap();
+    world.engine.set_settings(off.clone()).unwrap();
     assert_eq!(world.engine.settings(), Ok(off));
     assert_eq!(world.engine.sender_picture("a@revolut.com").await, Ok(None));
     assert!(world.logos.asked().is_empty());
@@ -1070,4 +1070,239 @@ async fn turned_off_nothing_is_asked_and_it_can_be_turned_on_again() {
     world.engine.set_settings(on).unwrap();
     let picture = world.engine.sender_picture("a@revolut.com").await;
     assert_eq!(picture.unwrap().as_deref(), Some(PICTURE));
+}
+
+// News
+
+fn heard(events: &mut tokio::sync::broadcast::Receiver<MailEvent>) -> Vec<MailEvent> {
+    let mut heard = Vec::new();
+    while let Ok(event) = events.try_recv() {
+        heard.push(event);
+    }
+
+    heard
+}
+
+fn arrivals(events: &[MailEvent]) -> Vec<Vec<String>> {
+    events
+        .iter()
+        .filter_map(|event| match event {
+            MailEvent::NewMail { messages, .. } => Some(
+                messages
+                    .iter()
+                    .map(|message| message.subject.clone())
+                    .collect(),
+            ),
+            MailEvent::FolderChanged { .. } => None,
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn unread_mail_that_arrives_in_the_inbox_is_announced_once() {
+    let (world, account) = with_account().await;
+    let inbox = folder(&world, &account, FolderRole::Inbox);
+    world.remote.lock().unwrap().deliver("INBOX", "Old", false);
+    world.engine.sync_folder(inbox.id, false).await.unwrap();
+    let mut events = world.engine.subscribe();
+
+    world
+        .remote
+        .lock()
+        .unwrap()
+        .deliver("INBOX", "Fresh", false);
+    world.engine.sync_folder(inbox.id, false).await.unwrap();
+
+    let first = heard(&mut events);
+    assert_eq!(arrivals(&first), vec![vec!["Fresh".to_string()]]);
+    assert!(first.contains(&MailEvent::FolderChanged {
+        account_id: account.id,
+        folder_id: inbox.id,
+    }));
+    let Some(MailEvent::NewMail {
+        account: address,
+        messages,
+        ..
+    }) = first
+        .iter()
+        .find(|event| matches!(event, MailEvent::NewMail { .. }))
+    else {
+        panic!("no announcement");
+    };
+    assert_eq!(address, "me@example.com");
+    assert_eq!(messages[0].from.as_ref().unwrap().email, "ann@example.com");
+
+    // Nothing changed: nothing is said.
+    world.engine.sync_folder(inbox.id, false).await.unwrap();
+    assert!(heard(&mut events).is_empty());
+}
+
+#[tokio::test]
+async fn what_was_already_there_or_already_read_is_not_news() {
+    let (world, account) = with_account().await;
+    let inbox = folder(&world, &account, FolderRole::Inbox);
+    let mut events = world.engine.subscribe();
+
+    // The first sync of a folder is catching up, not arrivals.
+    for index in 0..3 {
+        world
+            .remote
+            .lock()
+            .unwrap()
+            .deliver("INBOX", &format!("Before {index}"), false);
+    }
+    world.engine.sync_folder(inbox.id, false).await.unwrap();
+    assert!(arrivals(&heard(&mut events)).is_empty());
+
+    // Read on another device already, and loading older mail: not news.
+    world.remote.lock().unwrap().deliver("INBOX", "Read", true);
+    world.engine.sync_folder(inbox.id, true).await.unwrap();
+    assert!(arrivals(&heard(&mut events)).is_empty());
+}
+
+#[tokio::test]
+async fn only_the_inbox_is_announced() {
+    let (world, account) = with_account().await;
+    let archive = folder(&world, &account, FolderRole::Archive);
+    world
+        .remote
+        .lock()
+        .unwrap()
+        .deliver("Archive", "Old", false);
+    world.engine.sync_folder(archive.id, false).await.unwrap();
+    let mut events = world.engine.subscribe();
+
+    world
+        .remote
+        .lock()
+        .unwrap()
+        .deliver("Archive", "Filed", false);
+    world.engine.sync_folder(archive.id, false).await.unwrap();
+
+    let heard = heard(&mut events);
+    assert!(arrivals(&heard).is_empty());
+    // The list still has to show it.
+    assert_eq!(heard.len(), 1);
+}
+
+#[tokio::test]
+async fn with_notifications_off_the_lists_still_hear_of_new_mail() {
+    let (world, account) = with_account().await;
+    let inbox = folder(&world, &account, FolderRole::Inbox);
+    world.remote.lock().unwrap().deliver("INBOX", "Old", false);
+    world.engine.sync_folder(inbox.id, false).await.unwrap();
+    let mut off = AppSettings::default();
+    off.notifications.enabled = false;
+    world.engine.set_settings(off).unwrap();
+    let mut events = world.engine.subscribe();
+
+    world
+        .remote
+        .lock()
+        .unwrap()
+        .deliver("INBOX", "Fresh", false);
+    world.engine.sync_folder(inbox.id, false).await.unwrap();
+
+    let heard = heard(&mut events);
+    assert!(arrivals(&heard).is_empty());
+    assert_eq!(heard.len(), 1);
+}
+
+#[tokio::test]
+async fn the_watcher_fetches_new_mail_as_soon_as_the_server_has_news() {
+    let World { engine, remote, .. } = world();
+    let engine = Arc::new(engine);
+    let mut events = engine.subscribe();
+    // Started before any account exists: it must notice the new one.
+    tokio::spawn(Arc::clone(&engine).watch());
+
+    remote.lock().unwrap().deliver("INBOX", "Old", false);
+    let account = engine.add_account(settings(), PASSWORD).await.unwrap();
+    let inbox = engine
+        .list_folders(account.id)
+        .unwrap()
+        .into_iter()
+        .find(|folder| folder.role == FolderRole::Inbox)
+        .unwrap();
+    engine.sync_folder(inbox.id, false).await.unwrap();
+
+    let news = {
+        let mut remote = remote.lock().unwrap();
+        remote.deliver("INBOX", "Fresh", false);
+
+        Arc::clone(&remote.news)
+    };
+    news.notify_one();
+
+    let announced = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            if let Ok(MailEvent::NewMail { messages, .. }) = events.recv().await {
+                return messages;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(announced[0].subject, "Fresh");
+    assert_eq!(announced[0].preview.as_deref(), Some("Body of Fresh"));
+    // Taken in by asking for what is new only, not by listing the inbox.
+    assert!(remote.lock().unwrap().fetched_new >= 1);
+
+    // The sync that follows tells nothing twice.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    assert!(arrivals(&heard(&mut events)).is_empty());
+
+    // The message came down for its preview and is not downloaded again.
+    let downloads = remote.lock().unwrap().body_downloads;
+    engine.open_message(announced[0].id, false).await.unwrap();
+    assert_eq!(remote.lock().unwrap().body_downloads, downloads);
+}
+
+#[tokio::test]
+async fn the_message_is_not_downloaded_when_the_notification_does_not_show_it() {
+    let (world, account) = with_account().await;
+    let inbox = folder(&world, &account, FolderRole::Inbox);
+    world.remote.lock().unwrap().deliver("INBOX", "Old", false);
+    world.engine.sync_folder(inbox.id, false).await.unwrap();
+    let mut settings = AppSettings::default();
+    settings.notifications.body = "{subject}".to_string();
+    world.engine.set_settings(settings).unwrap();
+    let mut events = world.engine.subscribe();
+
+    world
+        .remote
+        .lock()
+        .unwrap()
+        .deliver("INBOX", "Fresh", false);
+    world.engine.sync_folder(inbox.id, false).await.unwrap();
+
+    let Some(MailEvent::NewMail { messages, .. }) = heard(&mut events)
+        .into_iter()
+        .find(|event| matches!(event, MailEvent::NewMail { .. }))
+    else {
+        panic!("no announcement");
+    };
+    assert_eq!(messages[0].preview, None);
+    assert_eq!(world.remote.lock().unwrap().body_downloads, 0);
+}
+
+#[tokio::test]
+async fn notification_settings_are_kept_and_nonsense_is_refused() {
+    let world = world();
+    let mut settings = AppSettings::default();
+    settings.notifications.title = "{subject}".to_string();
+    settings.notifications.custom_icon = Some("data:image/png;base64,AAAA".to_string());
+    world.engine.set_settings(settings.clone()).unwrap();
+    assert_eq!(world.engine.settings(), Ok(settings.clone()));
+
+    // A picture taken away again is gone, not kept from before.
+    settings.notifications.custom_icon = None;
+    world.engine.set_settings(settings.clone()).unwrap();
+    assert_eq!(world.engine.settings(), Ok(settings.clone()));
+
+    let mut wrong = settings.clone();
+    wrong.notifications.preview_length = 0;
+    let error = world.engine.set_settings(wrong).unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Invalid);
+    assert_eq!(world.engine.settings(), Ok(settings));
 }

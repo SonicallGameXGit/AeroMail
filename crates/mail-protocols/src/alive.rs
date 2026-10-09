@@ -76,6 +76,11 @@ impl<S: IncomingSession> IncomingSession for Trusted<S> {
         self.noted(result)
     }
 
+    async fn fetch_new(&mut self, folder: &str, after: u32) -> MailResult<Vec<RemoteMessage>> {
+        let result = self.session.fetch_new(folder, after).await;
+        self.noted(result)
+    }
+
     async fn fetch_flags(
         &mut self,
         folder: &str,
@@ -113,6 +118,11 @@ impl<S: IncomingSession> IncomingSession for Trusted<S> {
 
     async fn append(&mut self, folder: &str, raw: &[u8], seen: bool) -> MailResult<()> {
         let result = self.session.append(folder, raw, seen).await;
+        self.noted(result)
+    }
+
+    async fn wait_for_change(&mut self, folder: &str, limit: Duration) -> MailResult<()> {
+        let result = self.session.wait_for_change(folder, limit).await;
         self.noted(result)
     }
 }
