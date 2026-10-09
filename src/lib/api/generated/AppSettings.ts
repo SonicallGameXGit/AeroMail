@@ -9,4 +9,8 @@ senderPictures: boolean,
 /**
  * Remote images load in every message without asking for each one.
  */
-remoteImages: boolean, notifications: NotificationSettings, };
+remoteImages: boolean, 
+/**
+ * Adding an account opens it. Off: the open account and message stay.
+ */
+switchToNewAccount: boolean, notifications: NotificationSettings, };

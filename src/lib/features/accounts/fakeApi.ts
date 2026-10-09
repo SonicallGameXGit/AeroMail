@@ -131,6 +131,7 @@ export const defaultSettings = (): AppSettings => {
     return {
         senderPictures: true,
         remoteImages: false,
+        switchToNewAccount: true,
         notifications: {
             enabled: true,
             sound: true,

@@ -62,6 +62,7 @@
     let settings = $state<AppSettings>({
         senderPictures: false,
         remoteImages: false,
+        switchToNewAccount: true,
         notifications: {
             enabled: false,
             sound: false,
@@ -199,6 +200,7 @@
         // The rest waits: pictures are asked for as soon as the switch shows on.
         const onlyNotifications = next.senderPictures === before.senderPictures
             && next.remoteImages === before.remoteImages
+            && next.switchToNewAccount === before.switchToNewAccount
         if (onlyNotifications) {
             settings = next
         }
@@ -394,8 +396,13 @@
 
     const openLink = (url: string) => guard(() => api.openExternal(url))
 
-    const accountAdded = () => {
+    const accountAdded = (added: Account) => {
         addingAccount = false
+        // Asked before load(), which keeps the open account open.
+        if (settings.switchToNewAccount) {
+            accountId = added.id
+            selectedFolder = null
+        }
         load()
     }
 

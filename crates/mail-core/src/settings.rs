@@ -13,6 +13,8 @@ pub struct AppSettings {
     pub sender_pictures: bool,
     /// Remote images load in every message without asking for each one.
     pub remote_images: bool,
+    /// Adding an account opens it. Off: the open account and message stay.
+    pub switch_to_new_account: bool,
     pub notifications: NotificationSettings,
 }
 
@@ -81,6 +83,7 @@ impl Default for AppSettings {
         Self {
             sender_pictures: true,
             remote_images: false,
+            switch_to_new_account: true,
             notifications: NotificationSettings::default(),
         }
     }
@@ -184,6 +187,7 @@ impl AppSettings {
         Self {
             sender_pictures: switch(SENDER_PICTURES, default.sender_pictures),
             remote_images: switch(REMOTE_IMAGES, default.remote_images),
+            switch_to_new_account: switch(SWITCH_TO_NEW_ACCOUNT, default.switch_to_new_account),
             notifications: NotificationSettings {
                 enabled: switch(NOTIFICATIONS, base.enabled),
                 sound: switch(SOUND, base.sound),
@@ -219,6 +223,7 @@ impl AppSettings {
         vec![
             (SENDER_PICTURES, switch(self.sender_pictures)),
             (REMOTE_IMAGES, switch(self.remote_images)),
+            (SWITCH_TO_NEW_ACCOUNT, switch(self.switch_to_new_account)),
             (NOTIFICATIONS, switch(notifications.enabled)),
             (SOUND, switch(notifications.sound)),
             (WHILE_FOCUSED, switch(notifications.while_focused)),
@@ -240,6 +245,7 @@ impl AppSettings {
 // been since before the other notification settings existed.
 const SENDER_PICTURES: &str = "sender_pictures";
 const REMOTE_IMAGES: &str = "remote_images";
+const SWITCH_TO_NEW_ACCOUNT: &str = "switch_to_new_account";
 const NOTIFICATIONS: &str = "notifications";
 const SOUND: &str = "notification_sound";
 const WHILE_FOCUSED: &str = "notification_while_focused";
@@ -277,6 +283,7 @@ mod tests {
         let settings = AppSettings {
             sender_pictures: true,
             remote_images: true,
+            switch_to_new_account: false,
             notifications: NotificationSettings {
                 enabled: false,
                 sound: false,

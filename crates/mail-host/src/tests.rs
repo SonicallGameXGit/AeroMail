@@ -254,7 +254,7 @@ async fn settings_and_sender_pictures_go_under_the_names_the_ui_uses() {
     assert_eq!(
         dispatch(&engine, "settings", Value::Null).await,
         Ok(
-            json!({ "senderPictures": true, "remoteImages": false, "notifications": notifications })
+            json!({ "senderPictures": true, "remoteImages": false, "switchToNewAccount": true, "notifications": notifications })
         )
     );
 
@@ -270,7 +270,7 @@ async fn settings_and_sender_pictures_go_under_the_names_the_ui_uses() {
         "icon": "None",
         "customIcon": null,
     });
-    let changed = json!({ "senderPictures": false, "remoteImages": true, "notifications": quiet });
+    let changed = json!({ "senderPictures": false, "remoteImages": true, "switchToNewAccount": false, "notifications": quiet });
     let off = dispatch(&engine, "set_settings", json!({ "settings": changed })).await;
     assert_eq!(off, Ok(Value::Null));
     assert_eq!(

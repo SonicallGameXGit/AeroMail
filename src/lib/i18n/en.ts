@@ -106,6 +106,8 @@ export const en = {
     'settings.categories': 'Categories',
     'settings.accounts': 'Accounts',
     'settings.privacy': 'Privacy',
+    'settings.switchToNewAccount': 'Open a new account after adding it',
+    'settings.switchToNewAccountHint': 'Turned off, the account is added to the list and you stay in the account and message you are reading.',
     'settings.pictures': 'Show sender pictures',
     'settings.picturesHint': 'A company\'s logo is looked up on the internet by the domain of its address. Turned off, nothing is looked up.',
     'settings.remoteImages': 'Always show remote images',

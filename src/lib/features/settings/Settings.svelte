@@ -114,6 +114,12 @@
             <div class="row">
                 <Button icon="plus" onclick={onadd}>{t('account.add')}</Button>
             </div>
+            <CheckField
+                label={t('settings.switchToNewAccount')}
+                hint={t('settings.switchToNewAccountHint')}
+                checked={settings.switchToNewAccount}
+                onchange={(switchToNewAccount) => onchange({ ...settings, switchToNewAccount })}
+            />
         {:else if category === 'privacy'}
             <CheckField
                 label={t('settings.pictures')}
