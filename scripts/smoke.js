@@ -49,6 +49,12 @@ try {
     const link = await page.evaluate(() => window.mailclient.openExternal('file:///etc/passwd'))
     assert.equal(link.ok, false)
 
+    // The window waits, hidden, for the page to say which theme it shows.
+    const visible = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().every((window) => window.isVisible()))
+    assert.equal(visible, true)
+    const scheme = await page.evaluate(() => window.mailclient.setColorScheme('purple'))
+    assert.equal(scheme.ok, false)
+
     // Message HTML is shown in a frame like this one; the page's policy must let it load.
     const framed = await page.evaluate(() => new Promise((resolve) => {
         const frame = document.createElement('iframe')

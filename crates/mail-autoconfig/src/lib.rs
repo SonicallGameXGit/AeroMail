@@ -137,6 +137,31 @@ fn sign_in_choices_with(sign_in_ready: impl Fn(&str) -> bool) -> Vec<ProviderCho
         .collect()
 }
 
+/// A well-known provider whose domain the address field can hold fixed, so
+/// only the name before `@` is typed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[ts(export)]
+pub struct AddressPreset {
+    pub provider: String,
+    /// The provider's main domain, without `@`.
+    pub domain: String,
+    pub brand: Option<Brand>,
+}
+
+/// Every provider in the built-in table, in its order, with its main domain.
+pub fn address_presets() -> Vec<AddressPreset> {
+    providers::PROVIDERS
+        .iter()
+        .filter_map(|provider| {
+            provider.domains.first().map(|domain| AddressPreset {
+                provider: provider.name.to_string(),
+                domain: (*domain).to_string(),
+                brand: provider.brand,
+            })
+        })
+        .collect()
+}
+
 /// The provider's settings for signing in on its page, without an address:
 /// it is filled in from the account the user picks there. `None` when this
 /// build cannot sign in there.
@@ -191,6 +216,29 @@ mod tests {
     /// A build without any registered client id, whatever this one has.
     fn detect(email: &str) -> Result<Detection, AddressError> {
         detect_with(email, |_| false)
+    }
+
+    #[test]
+    fn presets_start_with_gmail_and_are_all_detected_as_built_in() {
+        let presets = address_presets();
+        assert_eq!(
+            presets.first(),
+            Some(&AddressPreset {
+                provider: "Gmail".to_string(),
+                domain: "gmail.com".to_string(),
+                brand: Some(Brand::Gmail),
+            }),
+        );
+        assert!(presets.iter().any(|preset| preset.domain == "outlook.com"));
+        for preset in presets {
+            let detection = detect(&format!("john@{}", preset.domain)).unwrap();
+            assert_eq!(
+                detection.source,
+                DetectionSource::BuiltIn,
+                "{}",
+                preset.domain
+            );
+        }
     }
 
     #[test]

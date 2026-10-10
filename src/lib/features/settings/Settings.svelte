@@ -1,5 +1,5 @@
 <script lang="ts" module>
-    export type Category = 'accounts' | 'privacy' | 'notifications'
+    export type Category = 'accounts' | 'appearance' | 'privacy' | 'notifications'
 
     // The category opened last stays open the next time, while the app runs.
     let lastCategory: Category = 'accounts'
@@ -14,6 +14,7 @@
     import type { IconName } from '$lib/design/icons'
     import NotificationOptions from '$lib/features/notifications/NotificationOptions.svelte'
     import { accountLabel } from '$lib/features/workspace/workspace'
+    import ThemePicker from './ThemePicker.svelte'
     import { t } from '$lib/i18n'
 
     type Props = {
@@ -31,6 +32,7 @@
 
     const categories: { id: Category, icon: IconName }[] = [
         { id: 'accounts', icon: 'account' },
+        { id: 'appearance', icon: 'appearance' },
         { id: 'privacy', icon: 'privacy' },
         { id: 'notifications', icon: 'bell' },
     ]
@@ -120,6 +122,8 @@
                 checked={settings.switchToNewAccount}
                 onchange={(switchToNewAccount) => onchange({ ...settings, switchToNewAccount })}
             />
+        {:else if category === 'appearance'}
+            <ThemePicker theme={settings.theme} onchange={(theme) => onchange({ ...settings, theme })} />
         {:else if category === 'privacy'}
             <CheckField
                 label={t('settings.pictures')}

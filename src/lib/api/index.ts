@@ -2,10 +2,11 @@
 // Components receive an `Api` and never reach for the shell themselves, so the
 // same UI can later run against another transport or a fake in tests.
 
-import type { DesktopBridge, NotificationRequest, NotificationTarget, Reply } from './bridge'
+import type { ColorScheme, DesktopBridge, NotificationRequest, NotificationTarget, Reply } from './bridge'
 import type { Account } from './generated/Account'
 import type { AccountSettings } from './generated/AccountSettings'
 import type { AddressError } from './generated/AddressError'
+import type { AddressPreset } from './generated/AddressPreset'
 import type { AppSettings } from './generated/AppSettings'
 import type { Attachment } from './generated/Attachment'
 import type { Brand } from './generated/Brand'
@@ -31,7 +32,9 @@ import type { TypedDomain } from './generated/TypedDomain'
 export type { Account } from './generated/Account'
 export type { AccountSettings } from './generated/AccountSettings'
 export type { AddressError } from './generated/AddressError'
+export type { AddressPreset } from './generated/AddressPreset'
 export type { AppSettings } from './generated/AppSettings'
+export type { ColorScheme } from './bridge'
 export type { Attachment } from './generated/Attachment'
 export type { AuthMethod } from './generated/AuthMethod'
 export type { Brand } from './generated/Brand'
@@ -63,6 +66,7 @@ export type { ServerRole } from './generated/ServerRole'
 export type { ServerSettings } from './generated/ServerSettings'
 export type { SettingsIssue } from './generated/SettingsIssue'
 export type { SignIn } from './generated/SignIn'
+export type { Theme } from './generated/Theme'
 export type { TypedDomain } from './generated/TypedDomain'
 
 export type DetectResult =
@@ -75,6 +79,8 @@ export type Api = {
     detectAccountSettings: (email: string) => Promise<DetectResult>
     // What the address typed so far says about its provider; asked on every change.
     recognizeAddress: (email: string) => Promise<TypedDomain>
+    // Well-known providers whose domain the address field can hold fixed.
+    addressPresets: () => Promise<AddressPreset[]>
     validateAccountSettings: (settings: AccountSettings) => Promise<SettingsIssue[]>
     defaultPort: (protocol: Protocol, security: Security) => Promise<number>
 
@@ -128,6 +134,9 @@ export type Api = {
     notify: (notification: NotificationRequest) => Promise<void>
     // The user clicked a notification: where it leads.
     onNotificationOpen: (listener: (target: NotificationTarget) => void) => () => void
+    // Has the shell's own parts (dialogs, menus) drawn light or dark to match
+    // the theme; the first call also shows the window.
+    setColorScheme: (scheme: ColorScheme) => Promise<void>
 }
 
 const addressErrors: readonly string[] = [
@@ -302,6 +311,7 @@ export const desktopApi: Api = {
         }
     },
     recognizeAddress: (email) => call<TypedDomain>('recognize_address', { email }),
+    addressPresets: () => call<AddressPreset[]>('address_presets'),
     validateAccountSettings: (settings) => call<SettingsIssue[]>('validate_account_settings', { settings }),
     defaultPort: (protocol, security) => call<number>('default_port', { protocol, security }),
 
@@ -359,5 +369,8 @@ export const desktopApi: Api = {
                 listener(target)
             }
         })
+    },
+    setColorScheme: async (scheme) => {
+        unwrap(await bridge().setColorScheme(scheme))
     },
 }

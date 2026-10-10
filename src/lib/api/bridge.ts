@@ -29,6 +29,10 @@ export type NotificationIconRequest =
     | { kind: 'none' }
     | { kind: 'image', url: string }
 
+// What the shell draws its own parts in (dialogs, menus, the window before
+// the page has painted). 'system' follows the system's light or dark choice.
+export type ColorScheme = 'system' | 'light' | 'dark'
+
 export type NotificationTarget = {
     accountId: number
     folderId: number
@@ -45,6 +49,9 @@ export type DesktopBridge = {
     openExternal: (url: string) => Promise<Reply<null>>
     // Shows a system notification (not while the window is in front, unless asked).
     notify: (notification: NotificationRequest) => Promise<Reply<null>>
+    // The window stays hidden until the page has first called this, so it
+    // never shows in the wrong theme.
+    setColorScheme: (scheme: ColorScheme) => Promise<Reply<null>>
     // What the core announces by itself. The value is not checked: it is
     // whatever the core sent. Both return the function that stops listening.
     onEvent: (listener: (event: unknown) => void) => () => void

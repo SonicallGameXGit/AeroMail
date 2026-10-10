@@ -35,6 +35,13 @@ const core = createCore(coreBinary(), dataDirectory === undefined ? [] : ['--dat
 
 const iconFile = (): string => path.join(app.getAppPath(), 'electron', 'icons', 'icon.png')
 
+// The page's --backdrop-middle, so the window is not white before the page paints.
+const backdropColor = (): string => nativeTheme.shouldUseDarkColors ? '#25323f' : '#7fd0f0'
+
+// The window waits for the page to say which theme it shows (`shell:set-color-scheme`),
+// but not forever: a page that never says still has to be seen.
+const showAtLatest = 3000
+
 const failure = (kind: string, detail: string): Reply => {
     return { ok: false, error: { kind, server: null, detail } }
 }
@@ -69,8 +76,8 @@ const createWindow = (): BrowserWindow => {
         minWidth: 720,
         minHeight: 480,
         icon: iconFile(),
-        // The page's --backdrop-middle, so the window is not white before the page paints.
-        backgroundColor: nativeTheme.shouldUseDarkColors ? '#25323f' : '#7fd0f0',
+        backgroundColor: backdropColor(),
+        show: false,
         autoHideMenuBar: true,
         webPreferences: {
             preload: path.join(import.meta.dirname, 'preload.cjs'),
@@ -85,6 +92,11 @@ const createWindow = (): BrowserWindow => {
     window.webContents.on('will-navigate', (event) => event.preventDefault())
 
     window.loadURL(devUrl ?? uiOrigin + '/')
+    setTimeout(() => {
+        if (!window.isDestroyed() && !window.isVisible()) {
+            window.show()
+        }
+    }, showAtLatest)
 
     return window
 }
@@ -123,6 +135,21 @@ const registerHandlers = () => {
         showNotification(window, parsed, iconFile(), (target) => {
             window.webContents.send('shell:notification-open', target)
         })
+
+        return { ok: true, value: null }
+    })
+
+    ipcMain.handle('shell:set-color-scheme', (event, scheme: unknown): Reply => {
+        const window = BrowserWindow.fromWebContents(event.sender)
+        if (window === null || (scheme !== 'system' && scheme !== 'light' && scheme !== 'dark')) {
+            return failure('Invalid', 'this colour scheme does not exist')
+        }
+        // Also what the page's prefers-color-scheme answers, so "system" in the page follows it.
+        nativeTheme.themeSource = scheme
+        window.setBackgroundColor(backdropColor())
+        if (!window.isVisible()) {
+            window.show()
+        }
 
         return { ok: true, value: null }
     })

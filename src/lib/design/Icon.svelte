@@ -159,6 +159,12 @@
         <circle class="gold" cx="12" cy="19.6" r="2" fill={gold} />
         <path class="gold" d="M12 2.8a1.3 1.3 0 0 1 1.3 1.3v.6a6 6 0 0 1 4.7 5.9v4.2l2.2 2.6v.9H3.8v-.9L6 14.8v-4.2a6 6 0 0 1 4.7-5.9v-.6A1.3 1.3 0 0 1 12 2.8z" fill={gold} />
         <path class="shine" d="M7.3 10.5a4.7 4.7 0 0 1 9.4 0v1.3a9 9 0 0 0-9.4 0z" />
+    {:else if name === 'appearance'}
+        <rect class="steel" x="2.5" y="3.5" width="19" height="13.5" rx="1.5" fill={steel} />
+        <rect x="4.5" y="5.5" width="15" height="9.5" fill={blue} />
+        <path d="M4.5 15v-3.5c3-2 6.5-2 9.5-.5 2-1 4-1.2 5.5-.8V15z" fill={green} />
+        <path class="shine" d="M4.5 5.5h15v3.5c-5-1.5-10-1.5-15 0z" />
+        <path class="steel" d="M9.5 17v2.5h5V17M7.5 20.5h9" fill={steel} />
     {:else if name === 'warning'}
         <path class="gold" d="M12 3 22 20.5H2z" fill={gold} />
         <path class="mark" d="M12 9.5v5M12 17.4v.2" />

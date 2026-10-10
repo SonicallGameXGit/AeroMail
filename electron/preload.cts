@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('mailclient', {
     },
     openExternal: (url: string) => ipcRenderer.invoke('shell:open-external', url),
     notify: (notification: unknown) => ipcRenderer.invoke('shell:notify', notification),
+    setColorScheme: (scheme: string) => ipcRenderer.invoke('shell:set-color-scheme', scheme),
     onEvent: (listener: (event: unknown) => void) => {
         const forward = (_event: unknown, event: unknown) => listener(event)
         ipcRenderer.on('core:event', forward)

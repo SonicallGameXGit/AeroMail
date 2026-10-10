@@ -9,7 +9,8 @@
         variant?: 'normal' | 'accent' | 'link' | 'tool'
         // `danger` marks an action that destroys something.
         tone?: 'neutral' | 'danger'
-        size?: 'normal' | 'large'
+        // `small` is a square the size of a field's inner picture, for inside a field.
+        size?: 'normal' | 'large' | 'small'
         icon?: IconName
         // A picture of its own in place of `icon`, like a provider's mark.
         picture?: Snippet
@@ -40,6 +41,12 @@
         popovertarget,
         expanded,
     }: Props = $props()
+
+    const iconSizes = {
+        normal: 18,
+        large: 22,
+        small: 14,
+    }
 </script>
 
 <button
@@ -55,7 +62,7 @@
     aria-haspopup={popovertarget === undefined ? undefined : 'menu'}
 >
     {#if icon !== undefined}
-        <Icon name={icon} size={size === 'large' ? 22 : 18} />
+        <Icon name={icon} size={iconSizes[size]} />
     {:else if picture !== undefined}
         {@render picture()}
     {/if}
@@ -102,6 +109,17 @@
 
     .large.bare {
         padding: var(--space-2);
+    }
+
+    /* No border: what it shows fills it, as it would without the button. */
+    .small,
+    .small.bare {
+        width: var(--field-picture-size);
+        height: var(--field-picture-size);
+        min-width: 0;
+        min-height: 0;
+        padding: 0;
+        border-width: 0;
     }
 
     button:hover:not(:disabled) {

@@ -166,6 +166,7 @@ pub async fn dispatch(engine: &Engine, command: &str, params: Value) -> Result<V
             let Email { email } = args(params)?;
             Ok(encode(&mail_autoconfig::recognize(&email)))
         }
+        "address_presets" => Ok(encode(&mail_autoconfig::address_presets())),
         "validate_account_settings" => {
             let Settings { settings } = args(params)?;
             Ok(encode(&mail_core::account::validate(&settings)))

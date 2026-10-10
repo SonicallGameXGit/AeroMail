@@ -141,7 +141,7 @@ async fn a_typed_address_is_recognized_under_the_names_the_ui_uses() {
     let known = dispatch(
         &engine(),
         "recognize_address",
-        json!({ "email": "john@gmail.c" }),
+        json!({ "email": "john@gmail" }),
     )
     .await;
     assert_eq!(
@@ -229,6 +229,17 @@ async fn picking_an_account_on_the_providers_page_goes_by_the_names_the_ui_uses(
 }
 
 #[tokio::test]
+async fn address_presets_list_the_well_known_providers() {
+    let presets = dispatch(&engine(), "address_presets", Value::Null)
+        .await
+        .unwrap();
+    assert_eq!(
+        presets[0],
+        json!({ "provider": "Gmail", "domain": "gmail.com", "brand": "Gmail" }),
+    );
+}
+
+#[tokio::test]
 async fn unknown_commands_and_wrong_parameters_are_invalid() {
     let unknown = dispatch(&engine(), "format_disk", Value::Null)
         .await
@@ -295,7 +306,7 @@ async fn settings_and_sender_pictures_go_under_the_names_the_ui_uses() {
     assert_eq!(
         dispatch(&engine, "settings", Value::Null).await,
         Ok(
-            json!({ "senderPictures": true, "remoteImages": false, "switchToNewAccount": true, "notifications": notifications })
+            json!({ "senderPictures": true, "remoteImages": false, "switchToNewAccount": true, "theme": "System", "notifications": notifications })
         )
     );
 
@@ -311,7 +322,7 @@ async fn settings_and_sender_pictures_go_under_the_names_the_ui_uses() {
         "icon": "None",
         "customIcon": null,
     });
-    let changed = json!({ "senderPictures": false, "remoteImages": true, "switchToNewAccount": false, "notifications": quiet });
+    let changed = json!({ "senderPictures": false, "remoteImages": true, "switchToNewAccount": false, "theme": "Slate", "notifications": quiet });
     let off = dispatch(&engine, "set_settings", json!({ "settings": changed })).await;
     assert_eq!(off, Ok(Value::Null));
     assert_eq!(

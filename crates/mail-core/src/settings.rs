@@ -15,7 +15,20 @@ pub struct AppSettings {
     pub remote_images: bool,
     /// Adding an account opens it. Off: the open account and message stay.
     pub switch_to_new_account: bool,
+    pub theme: Theme,
     pub notifications: NotificationSettings,
+}
+
+/// How the app looks. The UI draws each theme; the core only keeps the choice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub enum Theme {
+    /// Aero or Slate, whichever matches the system's light or dark choice.
+    System,
+    /// Windows Aero: light.
+    Aero,
+    /// Longhorn Slate: dark.
+    Slate,
 }
 
 /// How long a notification stays on screen.
@@ -84,6 +97,7 @@ impl Default for AppSettings {
             sender_pictures: true,
             remote_images: false,
             switch_to_new_account: true,
+            theme: Theme::System,
             notifications: NotificationSettings::default(),
         }
     }
@@ -176,6 +190,12 @@ impl AppSettings {
             Some("system") => NotificationDuration::System,
             _ => base.duration,
         };
+        let theme = match stored(THEME).as_deref() {
+            Some("system") => Theme::System,
+            Some("aero") => Theme::Aero,
+            Some("slate") => Theme::Slate,
+            _ => default.theme,
+        };
         let icon = match stored(ICON).as_deref() {
             Some("sender") => NotificationIcon::Sender,
             Some("app") => NotificationIcon::App,
@@ -188,6 +208,7 @@ impl AppSettings {
             sender_pictures: switch(SENDER_PICTURES, default.sender_pictures),
             remote_images: switch(REMOTE_IMAGES, default.remote_images),
             switch_to_new_account: switch(SWITCH_TO_NEW_ACCOUNT, default.switch_to_new_account),
+            theme,
             notifications: NotificationSettings {
                 enabled: switch(NOTIFICATIONS, base.enabled),
                 sound: switch(SOUND, base.sound),
@@ -213,6 +234,11 @@ impl AppSettings {
             NotificationDuration::Custom => "custom",
             NotificationDuration::UntilDismissed => "until_dismissed",
         };
+        let theme = match self.theme {
+            Theme::System => "system",
+            Theme::Aero => "aero",
+            Theme::Slate => "slate",
+        };
         let icon = match notifications.icon {
             NotificationIcon::Sender => "sender",
             NotificationIcon::App => "app",
@@ -224,6 +250,7 @@ impl AppSettings {
             (SENDER_PICTURES, switch(self.sender_pictures)),
             (REMOTE_IMAGES, switch(self.remote_images)),
             (SWITCH_TO_NEW_ACCOUNT, switch(self.switch_to_new_account)),
+            (THEME, Some(theme.to_string())),
             (NOTIFICATIONS, switch(notifications.enabled)),
             (SOUND, switch(notifications.sound)),
             (WHILE_FOCUSED, switch(notifications.while_focused)),
@@ -246,6 +273,7 @@ impl AppSettings {
 const SENDER_PICTURES: &str = "sender_pictures";
 const REMOTE_IMAGES: &str = "remote_images";
 const SWITCH_TO_NEW_ACCOUNT: &str = "switch_to_new_account";
+const THEME: &str = "theme";
 const NOTIFICATIONS: &str = "notifications";
 const SOUND: &str = "notification_sound";
 const WHILE_FOCUSED: &str = "notification_while_focused";
@@ -284,6 +312,7 @@ mod tests {
             sender_pictures: true,
             remote_images: true,
             switch_to_new_account: false,
+            theme: Theme::Slate,
             notifications: NotificationSettings {
                 enabled: false,
                 sound: false,
@@ -306,6 +335,7 @@ mod tests {
         let stored = HashMap::from([
             ("notification_seconds", "0".to_string()),
             ("notification_duration", "forever".to_string()),
+            ("theme", "purple".to_string()),
             (
                 "notification_custom_icon",
                 "https://example.com/a.png".to_string(),

@@ -2,6 +2,7 @@
 export type IconName =
     | 'account'
     | 'all'
+    | 'appearance'
     | 'archive'
     | 'attachment'
     | 'bell'

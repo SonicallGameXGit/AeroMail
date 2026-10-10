@@ -10,6 +10,7 @@
     import Modal from '$lib/design/Modal.svelte'
     import Notice from '$lib/design/Notice.svelte'
     import Splitter from '$lib/design/Splitter.svelte'
+    import { applyTheme, colorScheme } from '$lib/design/theme'
     import AccountSetup from '$lib/features/accounts/AccountSetup.svelte'
     import { newMailNotification } from '$lib/features/notifications/notification'
     import Settings from '$lib/features/settings/Settings.svelte'
@@ -66,6 +67,7 @@
         senderPictures: false,
         remoteImages: false,
         switchToNewAccount: true,
+        theme: 'System',
         notifications: {
             enabled: false,
             sound: false,
@@ -204,6 +206,7 @@
         const onlyNotifications = next.senderPictures === before.senderPictures
             && next.remoteImages === before.remoteImages
             && next.switchToNewAccount === before.switchToNewAccount
+            && next.theme === before.theme
         if (onlyNotifications) {
             settings = next
         }
@@ -234,8 +237,28 @@
         }
     })
 
+    // The theme is shown once the stored one is known: the shell keeps the
+    // window hidden until then, so it never appears in the wrong one.
+    let themeKnown = $state(false)
+
+    $effect(() => {
+        if (!themeKnown) {
+            return
+        }
+
+        const root = document.documentElement
+        applyTheme(root, settings.theme)
+        api.setColorScheme(colorScheme(settings.theme)).catch(() => undefined)
+
+        return () => applyTheme(root, 'System')
+    })
+
     const load = () => guard(async () => {
-        settings = await api.settings()
+        try {
+            settings = await api.settings()
+        } finally {
+            themeKnown = true
+        }
         const list = await api.listAccounts()
         for (const account of list) {
             folders = { ...folders, [account.id]: await api.listFolders(account.id) }

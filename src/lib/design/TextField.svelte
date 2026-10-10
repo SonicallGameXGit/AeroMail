@@ -15,6 +15,8 @@
         hint?: string
         // Something small shown inside a one-line field, at its end.
         trailing?: Snippet
+        // Fixed text after what is typed, shown dimmed and not editable (`@gmail.com`).
+        suffix?: string
         oninput?: (value: string) => void
     }
 
@@ -29,10 +31,20 @@
         multiline = false,
         hint,
         trailing,
+        suffix,
         oninput,
     }: Props = $props()
 
     const id = $props.id()
+
+    // What is typed must stop before the suffix, whatever its length.
+    let suffixWidth = $state(0)
+    // Read with the field, so the fixed part is heard too.
+    const described = $derived([
+        hint === undefined ? null : id,
+        suffix === undefined ? null : id + '-suffix',
+    ].filter((part) => part !== null).join(' '))
+    const room = $derived(trailing === undefined ? 'var(--space-2)' : 'var(--field-trailing-room)')
 
     const focusOnMount = (node: HTMLInputElement | HTMLTextAreaElement) => {
         if (autofocus) {
@@ -65,14 +77,18 @@
                 {placeholder}
                 {value}
                 class:roomy={trailing !== undefined}
+                style:padding-right={suffix === undefined ? undefined : `calc(${room} + ${suffixWidth}px)`}
                 aria-invalid={invalid}
-                aria-describedby={hint === undefined ? undefined : id}
+                aria-describedby={described === '' ? undefined : described}
                 autocomplete="off"
                 autocapitalize="off"
                 spellcheck="false"
                 use:focusOnMount
                 oninput={(event) => oninput?.(event.currentTarget.value)}
             />
+            {#if suffix !== undefined}
+                <span id={id + '-suffix'} class="suffix" class:roomy={trailing !== undefined} bind:clientWidth={suffixWidth}>{suffix}</span>
+            {/if}
             {#if trailing !== undefined}
                 <span class="trailing">{@render trailing()}</span>
             {/if}
@@ -107,6 +123,25 @@
         bottom: 0;
         display: flex;
         align-items: center;
+    }
+
+    /* Clicks go through to the field, so the text is typed as if it ended there. */
+    .suffix {
+        position: absolute;
+        top: 0;
+        right: var(--space-2);
+        bottom: 0;
+        display: flex;
+        align-items: center;
+        color: var(--text-muted);
+        white-space: nowrap;
+        pointer-events: none;
+        user-select: none;
+        -webkit-user-select: none;
+    }
+
+    .suffix.roomy {
+        right: var(--field-trailing-room);
     }
 
     input,

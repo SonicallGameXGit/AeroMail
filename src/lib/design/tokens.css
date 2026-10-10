@@ -4,10 +4,16 @@
 
     Light theme: Windows Aero. Dark theme: Longhorn Slate. The dark block is
     written twice on purpose: once for the OS preference, once for an explicit
-    choice via <html data-theme="slate">.
+    choice via <html data-theme="slate">. With no data-theme the app follows
+    the system (design/theme.ts sets it).
+
+    A theme block also works on any element, not only <html>: whatever is
+    inside it is drawn in that theme (the previews in the settings). A new
+    theme is one more [data-theme] block here and an entry in theme.ts.
 */
 
-:root {
+:root,
+[data-theme='aero'] {
     color-scheme: light;
 
     /* Type */
@@ -93,6 +99,8 @@
     --field-inner-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.12);
     /* Room kept at the end of a field that shows something inside it. */
     --field-trailing-room: 30px;
+    /* A picture or a small button inside a field, like a provider's mark. */
+    --field-picture-size: 20px;
 
     --focus-glow: 0 0 0 1px #3c9be6, 0 0 6px 1px rgba(60, 155, 230, 0.75);
 
@@ -190,7 +198,7 @@
 }
 
 @media (prefers-color-scheme: dark) {
-    :root:not([data-theme='aero']) {
+    :root:not([data-theme]) {
         color-scheme: dark;
 
         --backdrop-top: #10161d;
@@ -263,7 +271,7 @@
     }
 }
 
-:root[data-theme='slate'] {
+[data-theme='slate'] {
     color-scheme: dark;
 
     --backdrop-top: #10161d;

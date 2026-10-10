@@ -19,7 +19,7 @@ const pixel = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUw
 const pictureOf = (subject: string) => row(subject).element().querySelector('img')
 const toolbar = () => page.getByRole('toolbar', { name: 'Message actions' })
 // The window remembers the category opened last, so each test names its own.
-const openSettings = async (category: 'Accounts' | 'Privacy' | 'Notifications' = 'Accounts') => {
+const openSettings = async (category: 'Accounts' | 'Appearance' | 'Privacy' | 'Notifications' = 'Accounts') => {
     await page.getByRole('button', { name: /^Account: / }).click()
     await page.getByRole('menuitem', { name: 'Settings' }).click()
     await page.getByRole('tab', { name: category }).click()
@@ -608,5 +608,60 @@ describe('Workspace', () => {
         await page.getByRole('button', { name: /^Account: / }).click()
         await page.getByRole('menuitem', { name: 'Settings' }).click()
         await expect.element(tab('Privacy')).toHaveAttribute('aria-selected', 'true')
+    })
+
+    it('shows the stored theme from the start and switches it in the settings', async () => {
+        const state = seededState()
+        state.settings = { ...state.settings, theme: 'Slate' }
+        render(Workspace, { api: createFakeApi(state) })
+
+        const root = document.documentElement
+        const token = (element: Element, name: string) => getComputedStyle(element).getPropertyValue(name).trim()
+        await expect.poll(() => root.dataset['theme']).toBe('slate')
+        // The shell draws its dialogs dark too, and shows the window only now.
+        expect(state.colorSchemes).toEqual(['dark'])
+        const dark = token(root, '--surface')
+
+        await openSettings('Appearance')
+        const choice = (name: RegExp) => settings().getByRole('radio', { name })
+        await expect.element(choice(/^Dark/)).toHaveAttribute('aria-checked', 'true')
+        // Each choice is drawn in its own theme, whatever the app shows now.
+        const lightScene = choice(/^Light/).element().querySelector('[data-theme="aero"]')
+        expect(lightScene).not.toBe(null)
+        if (lightScene !== null) {
+            expect(token(lightScene, '--surface')).not.toBe(dark)
+        }
+        // The automatic one shows both.
+        expect(choice(/^Automatic/).element().querySelectorAll('[data-theme]')).toHaveLength(2)
+
+        await choice(/^Light/).click()
+        await expect.poll(() => root.dataset['theme']).toBe('aero')
+        await expect.element(choice(/^Light/)).toHaveAttribute('aria-checked', 'true')
+        expect(state.settings.theme).toBe('Aero')
+        expect(token(root, '--surface')).not.toBe(dark)
+        expect(state.colorSchemes.at(-1)).toBe('light')
+
+        // Like any group of radio buttons, the arrow keys move the choice.
+        await userEvent.keyboard('{ArrowLeft}')
+        await expect.element(choice(/^Automatic/)).toHaveFocus()
+        await expect.poll(() => root.hasAttribute('data-theme')).toBe(false)
+        expect(state.settings.theme).toBe('System')
+        expect(state.colorSchemes.at(-1)).toBe('system')
+    })
+
+    it('keeps the theme it has when the new one cannot be stored', async () => {
+        const state = start({
+            setSettings: async () => {
+                throw { kind: 'Storage', server: null, detail: 'disk full' }
+            },
+        })
+
+        await openSettings('Appearance')
+        await settings().getByRole('radio', { name: /^Dark/ }).click()
+
+        await expect.element(page.getByRole('alert')).toHaveTextContent('disk full')
+        await expect.element(settings().getByRole('radio', { name: /^Automatic/ })).toHaveAttribute('aria-checked', 'true')
+        expect(document.documentElement.hasAttribute('data-theme')).toBe(false)
+        expect(state.settings.theme).toBe('System')
     })
 })

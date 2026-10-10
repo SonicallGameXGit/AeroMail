@@ -36,8 +36,8 @@ pub enum TypedDomain {
 }
 
 /// Reads the domain typed so far. Its name alone (`gmail`) is enough to be
-/// known, as long as the rest is still on the way to a real domain
-/// (`gmail.c`).
+/// known, and so is the name with its dot; after the dot only the whole
+/// domain is, anything else (`gmail.c`) is taken for a typo.
 pub fn recognize(email: &str) -> TypedDomain {
     let Some((_, domain)) = email.trim().rsplit_once('@') else {
         return TypedDomain::Unknown;
@@ -49,7 +49,12 @@ pub fn recognize(email: &str) -> TypedDomain {
         .filter_map(|provider| provider.brand.map(|brand| (provider, brand)));
     for (provider, brand) in branded.clone() {
         for known in provider.domains {
-            if domain.starts_with(name_of(known)) && known.starts_with(domain.as_str()) {
+            // Past the dot only the whole domain counts; an ending still being typed
+            // is not told apart from a wrong one (the UI waits before it warns).
+            let name_and_dot = format!("{}.", name_of(known));
+            if name_and_dot.starts_with(domain.as_str()) && domain.starts_with(name_of(known))
+                || domain == *known
+            {
                 return TypedDomain::Known {
                     brand,
                     provider: provider.name.to_string(),
@@ -100,8 +105,6 @@ mod tests {
         for email in [
             "john@gmail",
             "john@gmail.",
-            "john@gmail.c",
-            "john@gmail.co",
             "john@gmail.com",
             "John@GMail.Com",
             " john@gmail.com ",
@@ -134,6 +137,8 @@ mod tests {
     #[test]
     fn suggests_the_real_domain_for_another_ending() {
         let cases = [
+            ("john@gmail.c", "gmail.com"),
+            ("john@gmail.co", "gmail.com"),
             ("john@gmail.ru", "gmail.com"),
             ("john@gmail.con", "gmail.com"),
             ("john@gmail.comm", "gmail.com"),

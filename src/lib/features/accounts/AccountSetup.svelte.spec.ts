@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { page } from 'vitest/browser'
 import { render } from 'vitest-browser-svelte'
+import '$lib/design/base.css'
 import type { DetectResult, TypedDomain } from '$lib/api'
 import AccountSetup from './AccountSetup.svelte'
 import {
@@ -38,7 +39,11 @@ describe('AccountSetup', () => {
             await typeAddress('john@gmail')
             await expect.element(mark()).toBeInTheDocument()
 
-            await typeAddress('john@gmail.co')
+            await typeAddress('john@gmail.')
+            await expect.element(mark()).toBeInTheDocument()
+            await expect.element(warning()).not.toBeInTheDocument()
+
+            await typeAddress('john@gmail.com')
             await expect.element(mark()).toBeInTheDocument()
             await expect.element(warning()).not.toBeInTheDocument()
         })
@@ -54,6 +59,22 @@ describe('AccountSetup', () => {
             await expect.element(page.getByLabelText('Email address')).toHaveValue('john@gmail.com')
             await expect.element(mark()).toBeInTheDocument()
             await expect.element(warning()).not.toBeInTheDocument()
+        })
+
+        it('lets a warning wait, so a corrected ending never flashes it', async () => {
+            start()
+
+            await typeAddress('john@gmail.r')
+            await new Promise((resolve) => setTimeout(resolve, 100))
+            await expect.element(warning()).not.toBeInTheDocument()
+
+            await typeAddress('john@gmail.com')
+            await new Promise((resolve) => setTimeout(resolve, 500))
+            await expect.element(warning()).not.toBeInTheDocument()
+            await expect.element(mark()).toBeInTheDocument()
+
+            await typeAddress('john@gmail.r')
+            await expect.element(warning()).toBeInTheDocument()
         })
 
         it('goes on with a mistyped address when the user wants to', async () => {
@@ -91,6 +112,61 @@ describe('AccountSetup', () => {
             await new Promise((resolve) => setTimeout(resolve, 50))
             await expect.element(warning()).not.toBeInTheDocument()
             await expect.element(mark()).toBeInTheDocument()
+        })
+    })
+
+    describe('with a provider picked from the list', () => {
+        const field = () => page.getByLabelText('Email address')
+        const pick = async (name: string) => {
+            await page.getByRole('button', { name: 'Email provider' }).click()
+            await page.getByRole('menuitem', { name }).click()
+        }
+
+        it('keeps the domain fixed, so only the name is typed', async () => {
+            const asked: string[] = []
+            const base = createFakeApi(emptyState())
+            start({
+                detectAccountSettings: (email) => {
+                    asked.push(email)
+
+                    return base.detectAccountSettings(email)
+                },
+            })
+
+            await typeAddress('john')
+            await pick('Gmail @gmail.com')
+            await expect.element(field()).toHaveValue('john')
+            await expect.element(field()).toHaveAccessibleDescription('@gmail.com')
+            // The mark takes the arrow's place and still opens the list.
+            await expect.element(page.getByTitle('Gmail address')).toBeInTheDocument()
+
+            await page.getByRole('button', { name: 'Continue' }).click()
+            await expect.element(page.getByRole('heading', { name: 'Settings found for Gmail' })).toBeInTheDocument()
+            expect(asked).toEqual(['john@gmail.com'])
+        })
+
+        it('keeps the name when another provider is picked', async () => {
+            start()
+
+            await typeAddress('john@gma')
+            await pick('Outlook @outlook.com')
+            await expect.element(field()).toHaveValue('john')
+            await expect.element(field()).toHaveAccessibleDescription('@outlook.com')
+            await expect.element(page.getByTitle('Gmail address')).not.toBeInTheDocument()
+        })
+
+        it('goes back to the whole address with None, or when one is pasted', async () => {
+            start()
+
+            await pick('Gmail @gmail.com')
+            await typeAddress('john')
+            await pick('None')
+            await expect.element(field()).toHaveValue('john@gmail.com')
+
+            await pick('Outlook @outlook.com')
+            await typeAddress('me@example.com')
+            await expect.element(field()).toHaveValue('me@example.com')
+            await expect.element(field()).toHaveAccessibleDescription('')
         })
     })
 
@@ -189,7 +265,6 @@ describe('AccountSetup', () => {
             await page.getByRole('button', { name: 'Cancel sign-in' }).click()
 
             await expect.element(gmail()).toBeEnabled()
-            await expect.element(page.getByRole('button', { name: 'Set up manually' })).toBeEnabled()
             await expect.element(page.getByRole('alert')).not.toBeInTheDocument()
             expect(cancelSignIn).toHaveBeenCalledWith(1)
             expect(onadded).not.toHaveBeenCalled()
@@ -321,6 +396,18 @@ describe('AccountSetup', () => {
 
         await expect.element(page.getByRole('heading', { name: 'We don\'t know corp.example yet' })).toBeInTheDocument()
         await expect.element(page.getByLabelText('Server').first()).toHaveValue('imap.corp.example')
+    })
+
+    it('offers manual setup only once a known provider is recognized', async () => {
+        start()
+
+        await expect.element(page.getByRole('button', { name: 'Set up manually' })).not.toBeInTheDocument()
+
+        await typeAddress('me@corp.example')
+        await expect.element(page.getByRole('button', { name: 'Set up manually' })).not.toBeInTheDocument()
+
+        await typeAddress('john@gmail.com')
+        await expect.element(page.getByRole('button', { name: 'Set up manually' })).toBeEnabled()
     })
 
     it('opens the manual form for a known provider when asked to', async () => {

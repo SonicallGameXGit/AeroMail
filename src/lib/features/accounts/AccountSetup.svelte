@@ -5,6 +5,7 @@
         Account,
         AccountSettings,
         AddressError,
+        AddressPreset,
         Api,
         Brand,
         Detection,
@@ -19,6 +20,8 @@
     } from '$lib/api'
     import BrandMark from '$lib/design/BrandMark.svelte'
     import Button from '$lib/design/Button.svelte'
+    import Menu from '$lib/design/Menu.svelte'
+    import MenuItem from '$lib/design/MenuItem.svelte'
     import Notice from '$lib/design/Notice.svelte'
     import TextField from '$lib/design/TextField.svelte'
     import { errorMessage } from '$lib/features/workspace/workspace'
@@ -49,6 +52,11 @@
     let addressError = $state<AddressError | null>(null)
     // What the address typed so far says about its provider.
     let typed = $state<TypedDomain>({ type: 'unknown' })
+    // A provider whose domain the field holds fixed: only the name before `@` is typed.
+    let preset = $state<AddressPreset | null>(null)
+    let presets = $state<AddressPreset[]>([])
+    // What the field shows: with a preset, the address without its fixed domain.
+    const shown = $derived(preset === null ? email : email.slice(0, email.length - preset.domain.length - 1))
     let failed = $state(false)
     let busy = $state(false)
 
@@ -72,6 +80,10 @@
         api.signInChoices().then((found) => {
             choices = found
         }).catch(() => undefined)
+        // Without them the field takes the whole address, as it always can.
+        api.addressPresets().then((found) => {
+            presets = found
+        }).catch(() => undefined)
     })
 
     const run = async (action: () => Promise<void>) => {
@@ -91,20 +103,70 @@
         action()
     }
 
+    // How long a typo warning waits, so typing the right ending never flashes it.
+    const warningDelay = 350
+    let warningTimer: ReturnType<typeof setTimeout> | undefined
+
     const recognize = async (value: string) => {
         // Only a hint: when the core cannot say, the field works the same without it.
         const unknown: TypedDomain = { type: 'unknown' }
         const answer = await api.recognizeAddress(value).catch(() => unknown)
         // Answers can arrive out of order; only the one for what the field holds counts.
-        if (email === value) {
-            typed = answer
+        if (email !== value) {
+            return
         }
+
+        clearTimeout(warningTimer)
+        // The mark and the clearing of a warning are immediate; only a new warning waits.
+        if (answer.type === 'mistyped' && typed.type !== 'mistyped') {
+            warningTimer = setTimeout(() => {
+                if (email === value) {
+                    typed = answer
+                }
+            }, warningDelay)
+
+            return
+        }
+
+        typed = answer
     }
 
     const typeEmail = (value: string) => {
         email = value
         addressError = null
         recognize(value)
+    }
+
+    const typeField = (value: string) => {
+        // A whole address typed or pasted is taken as it is.
+        if (preset !== null && value.includes('@')) {
+            preset = null
+        }
+
+        typeEmail(preset === null ? value : value + '@' + preset.domain)
+    }
+
+    const localPart = (text: string): string => {
+        const at = text.lastIndexOf('@')
+
+        return at === -1 ? text : text.slice(0, at)
+    }
+
+    const choosePreset = (next: AddressPreset | null) => {
+        if (next === null && preset === null) {
+            return
+        }
+
+        const local = localPart(shown)
+        preset = next
+        if (next !== null) {
+            typeEmail(local + '@' + next.domain)
+
+            return
+        }
+
+        // Back to typing the whole address: what was typed stays, domain included.
+        typeEmail(local === '' ? '' : email)
     }
 
     const useSuggestion = (domain: string) => {
@@ -250,6 +312,41 @@
     {/if}
 {/snippet}
 
+<!-- The provider's mark when it is recognized, an arrow otherwise; either opens the presets. -->
+{#snippet providers()}
+    <Menu
+        label={t('setup.provider')}
+        size="small"
+        align="end"
+        disabled={busy}
+        icon={typed.type === 'known' ? undefined : 'chevron'}
+        picture={typed.type === 'known' ? mark : undefined}
+    >
+        {#snippet children(close)}
+            <MenuItem
+                current={preset === null}
+                onclick={() => {
+                    close()
+                    choosePreset(null)
+                }}
+            >
+                {t('setup.noProvider')}
+            </MenuItem>
+            {#each presets as option (option.domain)}
+                <MenuItem
+                    current={preset !== null && preset.domain === option.domain}
+                    onclick={() => {
+                        close()
+                        choosePreset(option)
+                    }}
+                >
+                    {option.provider} <span class="domain">@{option.domain}</span>
+                </MenuItem>
+            {/each}
+        {/snippet}
+    </Menu>
+{/snippet}
+
 <!-- How a sign-in on the provider's page is going, and why it failed. -->
 {#snippet progress()}
     {#if connectError !== null}
@@ -281,12 +378,13 @@
             label={t('setup.email')}
             type="email"
             inputmode="email"
-            placeholder={t('setup.emailPlaceholder')}
-            value={email}
+            placeholder={preset === null ? t('setup.emailPlaceholder') : ''}
+            value={shown}
+            suffix={preset === null ? undefined : '@' + preset.domain}
             autofocus
             invalid={addressError !== null}
-            trailing={typed.type === 'known' ? mark : undefined}
-            oninput={typeEmail}
+            trailing={presets.length > 0 ? providers : typed.type === 'known' ? mark : undefined}
+            oninput={typeField}
         />
 
         {#if typed.type === 'mistyped'}
@@ -332,7 +430,10 @@
                 {#if oncancel !== undefined}
                     <Button variant="link" disabled={busy} onclick={oncancel}>{t('setup.cancel')}</Button>
                 {/if}
-                <Button variant="link" disabled={busy} onclick={() => lookUp(true)}>{t('setup.manual')}</Button>
+                <!-- Only where there is an easier way in to set aside; an unknown domain opens the form anyway. -->
+                {#if typed.type === 'known'}
+                    <Button variant="link" disabled={busy} onclick={() => lookUp(true)}>{t('setup.manual')}</Button>
+                {/if}
             {/if}
             <span class="spacer"></span>
             <Button variant="accent" type="submit" disabled={busy}>{t('setup.continue')}</Button>
@@ -509,6 +610,10 @@
         margin-top: var(--space-1);
         color: var(--text-muted);
         overflow-wrap: anywhere;
+    }
+
+    .domain {
+        color: var(--text-muted);
     }
 
     .choices {

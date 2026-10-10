@@ -6,6 +6,7 @@ import type {
     AccountSettings,
     Api,
     AppSettings,
+    ColorScheme,
     Detection,
     Folder,
     FolderRole,
@@ -110,6 +111,8 @@ export type FakeState = {
     remoteMessages: number[]
     // System notifications that were asked for.
     notified: NotificationRequest[]
+    // What the shell was told to show its own windows and dialogs in, in order.
+    colorSchemes: ColorScheme[]
     // Who listens for what the core announces / for clicks on notifications.
     listeners: ((event: MailEvent) => void)[]
     openListeners: ((target: NotificationTarget) => void)[]
@@ -135,6 +138,7 @@ export const defaultSettings = (): AppSettings => {
         senderPictures: true,
         remoteImages: false,
         switchToNewAccount: true,
+        theme: 'System',
         notifications: {
             enabled: true,
             sound: true,
@@ -205,6 +209,7 @@ export const seededState = (): FakeState => {
         settings: defaultSettings(),
         remoteMessages: [],
         notified: [],
+        colorSchemes: [],
         listeners: [],
         openListeners: [],
     }
@@ -222,6 +227,7 @@ export const emptyState = (): FakeState => {
         settings: defaultSettings(),
         remoteMessages: [],
         notified: [],
+        colorSchemes: [],
         listeners: [],
         openListeners: [],
     }
@@ -295,7 +301,7 @@ export const createFakeApi = (state: FakeState = emptyState(), overrides: Partia
             if (!email.includes('@') || !domain.startsWith('gmail')) {
                 return { type: 'unknown' }
             }
-            if ('gmail.com'.startsWith(domain)) {
+            if ('gmail.'.startsWith(domain) || domain === 'gmail.com') {
                 return { type: 'known', brand: 'Gmail', provider: 'Gmail' }
             }
             if (domain.startsWith('gmail.')) {
@@ -351,6 +357,10 @@ export const createFakeApi = (state: FakeState = emptyState(), overrides: Partia
             return { id: signIns.length, url: fakeSignInUrl }
         },
         signInChoices: async () => [{ brand: 'Gmail', provider: 'Gmail' }],
+        addressPresets: async () => [
+            { provider: 'Gmail', domain: 'gmail.com', brand: 'Gmail' },
+            { provider: 'Outlook', domain: 'outlook.com', brand: null },
+        ],
         // The user approves in the browser at once.
         finishSignIn: async (signInId) => {
             const settings = signIns[signInId - 1]
@@ -459,6 +469,9 @@ export const createFakeApi = (state: FakeState = emptyState(), overrides: Partia
         },
         notify: async (notification) => {
             state.notified = [...state.notified, notification]
+        },
+        setColorScheme: async (scheme) => {
+            state.colorSchemes = [...state.colorSchemes, scheme]
         },
         onNotificationOpen: (listener) => {
             state.openListeners = [...state.openListeners, listener]

@@ -11,13 +11,26 @@
         // What the button shows next to its icon. Icon only when left out.
         button?: Snippet
         icon?: IconName
+        // A picture of its own in place of `icon`.
+        picture?: Snippet
         variant?: 'normal' | 'tool'
+        size?: 'normal' | 'small'
         // Which edge of the button the menu lines up with.
         align?: 'start' | 'end'
         disabled?: boolean
     }
 
-    let { label, children, button, icon, variant = 'tool', align = 'start', disabled = false }: Props = $props()
+    let {
+        label,
+        children,
+        button,
+        icon,
+        picture,
+        variant = 'tool',
+        size = 'normal',
+        align = 'start',
+        disabled = false,
+    }: Props = $props()
 
     const id = $props.id()
     const edge = 8
@@ -79,9 +92,9 @@
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <span class="menu" bind:this={anchor} onkeydown={step}>
     {#if button === undefined}
-        <Button {variant} {icon} {label} {disabled} popovertarget={id} expanded={open} />
+        <Button {variant} {size} {icon} {picture} {label} {disabled} popovertarget={id} expanded={open} />
     {:else}
-        <Button {variant} {icon} {label} {disabled} popovertarget={id} expanded={open}>
+        <Button {variant} {size} {icon} {picture} {label} {disabled} popovertarget={id} expanded={open}>
             {@render button()}
         </Button>
     {/if}
