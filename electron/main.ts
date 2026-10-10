@@ -7,6 +7,7 @@ import { pathToFileURL } from 'node:url'
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, net, protocol, shell } from 'electron'
 import { createCore, type Reply } from './core.js'
 import { parseNotification, showNotification } from './notifications.js'
+import { createTray } from './tray.js'
 
 // The built UI is served from app://mailclient/ instead of file://, so its
 // absolute paths work and it gets a real origin.
@@ -33,7 +34,9 @@ const coreBinary = (): string => {
 
 const core = createCore(coreBinary(), dataDirectory === undefined ? [] : ['--data-dir', dataDirectory])
 
-const iconFile = (): string => path.join(app.getAppPath(), 'electron', 'icons', 'icon.png')
+const iconsDirectory = (): string => path.join(app.getAppPath(), 'electron', 'icons')
+
+const iconFile = (): string => path.join(iconsDirectory(), 'icon.png')
 
 // The page's --backdrop-middle, so the window is not white before the page paints.
 const backdropColor = (): string => nativeTheme.shouldUseDarkColors ? '#25323f' : '#7fd0f0'
@@ -41,6 +44,11 @@ const backdropColor = (): string => nativeTheme.shouldUseDarkColors ? '#25323f' 
 // The window waits for the page to say which theme it shows (`shell:set-color-scheme`),
 // but not forever: a page that never says still has to be seen.
 const showAtLatest = 3000
+
+// Closing the window only hides it; set once the app is really on its way out.
+let quitting = false
+// Whether the window has been on screen yet (it starts hidden, see `showAtLatest`).
+let shownOnce = false
 
 const failure = (kind: string, detail: string): Reply => {
     return { ok: false, error: { kind, server: null, detail } }
@@ -91,6 +99,22 @@ const createWindow = (): BrowserWindow => {
     window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
     window.webContents.on('will-navigate', (event) => event.preventDefault())
 
+    window.once('show', () => {
+        shownOnce = true
+    })
+    // The app keeps running in the tray. The page stays loaded, hidden, because
+    // it is what words the new-mail notifications.
+    window.on('close', (event) => {
+        if (!quitting) {
+            event.preventDefault()
+            window.hide()
+        }
+    })
+    // Windows ends a session without `before-quit`; a hidden window must not hold up the shutdown.
+    window.on('session-end', () => {
+        quitting = true
+    })
+
     window.loadURL(devUrl ?? uiOrigin + '/')
     setTimeout(() => {
         if (!window.isDestroyed() && !window.isVisible()) {
@@ -99,6 +123,22 @@ const createWindow = (): BrowserWindow => {
     }, showAtLatest)
 
     return window
+}
+
+// Brings the window back from the tray, the taskbar or behind other windows.
+const showWindow = () => {
+    const window = BrowserWindow.getAllWindows()[0]
+    if (window === undefined) {
+        createWindow()
+
+        return
+    }
+
+    if (window.isMinimized()) {
+        window.restore()
+    }
+    window.show()
+    window.focus()
 }
 
 const registerHandlers = () => {
@@ -168,18 +208,22 @@ protocol.registerSchemesAsPrivileged([
     { scheme: 'app', privileges: { standard: true, secure: true, supportFetchAPI: true } },
 ])
 
-// A second start only brings the running window forward: two cores must not share one database.
+// A second start only brings the running window forward, from the tray too:
+// two cores must not share one database.
 if (app.requestSingleInstanceLock()) {
-    app.on('second-instance', () => {
-        const window = BrowserWindow.getAllWindows()[0]
-        if (window !== undefined) {
-            if (window.isMinimized()) {
-                window.restore()
-            }
-            window.focus()
+    app.on('second-instance', () => showWindow())
+    // macOS: a click on the Dock icon of an app whose window is closed. It also
+    // comes at launch, while the window still waits for the page's theme.
+    app.on('activate', () => {
+        if (shownOnce) {
+            showWindow()
         }
     })
 
+    app.on('before-quit', () => {
+        quitting = true
+    })
+    // Windows are only really closed while quitting.
     app.on('window-all-closed', () => app.quit())
     app.on('will-quit', () => core.stop())
 
@@ -199,6 +243,7 @@ if (app.requestSingleInstanceLock()) {
         })
         core.start()
         createWindow()
+        createTray(iconsDirectory(), { open: showWindow, quit: () => app.quit() })
     })
 } else {
     app.quit()

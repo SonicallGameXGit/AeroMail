@@ -97,7 +97,7 @@ MailClient/
         mail-render/            header parsing, HTML sanitising, attachments, composing raw messages
         mail-engine/            the operations the UI calls; owns the store, uses the traits
         mail-host/              the engine as a process (`mailclient-core`): commands as JSON, keychain
-    electron/                   thin shell: window, starts the core, save dialog, external links, notifications
+    electron/                   thin shell: window, starts the core, save dialog, external links, notifications, tray
         icons/
     electron-builder.json       packaging: installers with the core binary next to the app
     .env.example                what a build can be given (copied to the git-ignored `.env`)
@@ -314,6 +314,7 @@ Works today (IMAP + SMTP, password sign-in):
 - New mail arrives by itself: the core watches every account's inbox (IMAP IDLE on a connection of its own, a check every minute for servers without it), the open list updates without a refresh, and the system shows a notification (by default the sender's picture, their name, the subject and the start of the message; a click opens the message). In the settings: on / off and sound at the top, with a live sample; "Customize the notification" opens title and text (ready-made choices or the user's own text with fields), length of the message part, picture (sender, app icon, the user's own, none), how long it stays, and whether it shows while the app is in front.
 - Read / unread, flag, delete (to Trash, final inside Trash), archive, move to folder.
 - Writing: new message, reply, reply all, forward (plain text), Cc / Bcc, copy saved to Sent.
+- Tray: closing the window leaves the app running in the tray (still watching for mail and notifying); the tray icon and its menu open the window again or quit. One instance only: starting the app again brings the running window forward, also from the tray.
 
 Not built yet, roughly in this order:
 
@@ -321,7 +322,7 @@ Not built yet, roughly in this order:
 2. **POP3** (the form offers it; connecting answers "not available yet").
 3. Search, threading, unified inbox, multi-select and bulk actions, undo, drafts, signatures.
 4. Composer: attachments, rich text. Marking the original as answered after a reply.
-5. Native integration: notification sounds of our own, tray with an unread count, autostart, `mailto:`, `.eml`. Watching folders other than the inbox (they are still checked every 2 minutes while open).
+5. Native integration: notification sounds of our own, an unread count on the tray icon, autostart, `mailto:`, `.eml`. Watching folders other than the inbox (they are still checked every 2 minutes while open).
 6. More in the settings window (pane widths, refresh interval, sounds, close-to-tray), keyboard shortcuts, bundled font.
 7. Online autoconfig lookups (provider autoconfig files, DNS SRV) behind a trait.
 8. Self-signed / private-CA certificates with an explicit user decision.
@@ -404,3 +405,4 @@ Newest last. One line per decision: date, decision, reason.
 - 2026-10-10 - The shell follows the theme (`shell:set-color-scheme`: system / light / dark sets Electron's `nativeTheme.themeSource`, so its own dialogs and menus match), and the window stays hidden until the page has first said which theme it shows (at most 3 seconds). Reason: without it a non-default theme showed the OS's colours for a moment at every start.
 - 2026-10-10 - A typo warning appears for any ending of a closed provider's name that is not its whole domain, including one still being typed (`gmail.c`), and waits 350 ms before showing, so typing the right ending never flashes it; the mark and the removal of a warning are immediate. Reason: owner's request.
 - 2026-10-10 - The address field can hold a provider's domain fixed (`address_presets`, `AddressPreset`: every provider of the built-in table with its first domain): a dropdown at the field's end, "None" first and the default; with a provider picked only the name is typed and the domain shows dimmed after it (`TextField`'s `suffix`), typing or pasting `@` goes back to the whole address, and "None" keeps the address as it was. The arrow and the provider's mark share one place and both open the list. Reason: owner's request, in the way Google's own sign-in page shows the domain.
+- 2026-10-10 - Closing the window hides it and the app stays in the tray (`electron/tray.ts`: open, quit; a click opens the window); only "Quit" in the tray menu (or the system's own quit, Cmd+Q, logging off) ends it. A second start, the tray and the macOS Dock bring the same window back. The window is hidden, not destroyed, because the page words the notifications. The tray menu is plain English in the shell, outside `t()`, like the sign-in page; move it when a second language exists. Close-to-tray is not a setting yet (roadmap 6), and a Linux desktop without a tray (GNOME without an AppIndicator extension) cannot be detected: there the app runs unseen until it is started again. Reason: owner's request - mail and notifications must keep coming with the window closed, like Discord.

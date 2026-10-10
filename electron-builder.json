@@ -6,6 +6,7 @@
         "build/**",
         "dist-electron/**",
         "electron/icons/icon.png",
+        "electron/icons/icon.ico",
         "package.json"
     ],
     "linux": {

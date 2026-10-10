@@ -3,9 +3,12 @@
 // Needs a display (on a headless machine: `xvfb-run -a pnpm test:app`).
 
 import assert from 'node:assert/strict'
+import { spawn } from 'node:child_process'
+import { once } from 'node:events'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
+import electron from 'electron'
 import { _electron } from 'playwright'
 import { run, shellEnv } from './run.js'
 
@@ -22,6 +25,16 @@ delete env.MAILCLIENT_DEV_URL
 const profile = '--user-data-dir=' + path.join(dataDirectory, 'profile')
 // A Wayland session without its socket (xvfb-run) has to be told to use X11.
 const args = process.env.WAYLAND_DISPLAY === undefined ? [profile, '--ozone-platform=x11', '.'] : [profile, '.']
+
+// Some window events arrive a moment after what caused them.
+const eventually = async (check) => {
+    const deadline = Date.now() + 5000
+    while (!await check() && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 100))
+    }
+
+    return check()
+}
 
 const app = await _electron.launch({ args, env })
 try {
@@ -75,6 +88,22 @@ try {
     const alert = page.getByRole('alert')
     await alert.waitFor({ timeout: 30000 })
     assert.match(await alert.innerText(), /imap\.mailclient\.invalid/)
+
+    // Closing the window keeps the app running in the tray, page and all;
+    // starting it again opens the same window instead of a second app.
+    const windowsVisible = () => app.evaluate(({ BrowserWindow }) => {
+        return BrowserWindow.getAllWindows().map((window) => window.isVisible())
+    })
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.close())
+    assert.ok(await eventually(async () => (await windowsVisible()).join() === 'false'))
+    const second = spawn(electron, args, { env, stdio: 'ignore' })
+    const [code] = await once(second, 'exit')
+    assert.equal(code, 0)
+    assert.ok(await eventually(async () => (await windowsVisible()).join() === 'true'))
+    // The same page, not a new one: the form's answer is still on it.
+    assert.equal(await alert.isVisible(), true)
+    const again = await page.evaluate(() => window.mailclient.call('list_accounts', {}))
+    assert.deepEqual(again, { ok: true, value: [] })
 
     assert.deepEqual(violations, [])
     console.log('desktop smoke test passed')
