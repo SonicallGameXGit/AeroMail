@@ -6,6 +6,7 @@
     import Button from '$lib/design/Button.svelte'
     import GlassWindow from '$lib/design/GlassWindow.svelte'
     import Icon from '$lib/design/Icon.svelte'
+    import MessageBox from '$lib/design/MessageBox.svelte'
     import Modal from '$lib/design/Modal.svelte'
     import Notice from '$lib/design/Notice.svelte'
     import Splitter from '$lib/design/Splitter.svelte'
@@ -56,6 +57,8 @@
     let settingsOpen = $state(false)
     // The account whose removal is waiting for confirmation.
     let removing = $state<Account | null>(null)
+    // The account just added, until its message box is closed.
+    let added = $state<{ account: Account, opened: boolean } | null>(null)
     let layout = $state<Layout>(loadLayout())
 
     // Until the real settings were loaded: nothing is looked up or shown.
@@ -396,13 +399,19 @@
 
     const openLink = (url: string) => guard(() => api.openExternal(url))
 
-    const accountAdded = (added: Account) => {
+    const accountAdded = (account: Account) => {
         addingAccount = false
+        // The very first account is opened whatever the setting says.
+        const opened = settings.switchToNewAccount || accounts === null || accounts.length === 0
         // Asked before load(), which keeps the open account open.
         if (settings.switchToNewAccount) {
-            accountId = added.id
+            // The settings would stand between the user and the account.
+            settingsOpen = false
+            accountId = account.id
             selectedFolder = null
         }
+        // Shown at once: opening the account waits for its server.
+        added = { account, opened }
         load()
     }
 
@@ -646,7 +655,7 @@
     {/snippet}
 
     {#if settingsOpen}
-        <Modal title={t('settings.title')} wide>
+        <Modal title={t('settings.title')} size="wide">
             <Settings
                 {accounts}
                 {settings}
@@ -667,20 +676,22 @@
 
     {#if removing !== null}
         {@const gone = removing}
-        <Modal title={t('account.remove')}>
-            <div class="confirm">
-                <Icon name="warning" size={32} />
-                <p>{t('account.removeConfirm', { email: gone.settings.email })}</p>
-            </div>
-            <div class="choices">
+        <MessageBox
+            title={t('account.remove')}
+            icon="warning"
+            heading={t('account.removeHeading', { email: gone.settings.email })}
+            onescape={() => removing = null}
+        >
+            {t('account.removeHint')}
+            {#snippet buttons()}
                 <Button onclick={() => removing = null}>{t('account.removeNo')}</Button>
                 <Button tone="danger" icon="trash" onclick={() => removeAccount(gone)}>{t('account.removeYes')}</Button>
-            </div>
-        </Modal>
+            {/snippet}
+        </MessageBox>
     {/if}
 
     {#if form !== null}
-        <Modal title={t('compose.title')} wide>
+        <Modal title={t('compose.title')} size="wide">
             <Composer
                 {accounts}
                 {form}
@@ -692,6 +703,22 @@
             />
         </Modal>
     {/if}
+{/if}
+
+<!-- Outside the workspace: after the very first account it shows while the
+     workspace is still being opened. -->
+{#if added !== null}
+    <MessageBox
+        title={t('account.added')}
+        icon="success"
+        heading={t('account.addedHeading', { email: added.account.settings.email })}
+        onescape={() => added = null}
+    >
+        {added.opened ? t('account.addedOpened') : t('account.addedKept')}
+        {#snippet buttons()}
+            <Button variant="accent" onclick={() => added = null}>{t('app.ok')}</Button>
+        {/snippet}
+    </MessageBox>
 {/if}
 
 <style>
@@ -742,19 +769,6 @@
 
     .error-text {
         flex: 1;
-    }
-
-    .confirm {
-        display: flex;
-        align-items: center;
-        gap: var(--space-3);
-    }
-
-    .choices {
-        display: flex;
-        justify-content: flex-end;
-        gap: var(--space-2);
-        margin-top: var(--space-5);
     }
 
     small {

@@ -4,7 +4,7 @@
 import { statSync } from 'node:fs'
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { app, BrowserWindow, dialog, ipcMain, Menu, net, protocol, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, net, protocol, shell } from 'electron'
 import { createCore, type Reply } from './core.js'
 import { parseNotification, showNotification } from './notifications.js'
 
@@ -69,6 +69,8 @@ const createWindow = (): BrowserWindow => {
         minWidth: 720,
         minHeight: 480,
         icon: iconFile(),
+        // The page's --backdrop-middle, so the window is not white before the page paints.
+        backgroundColor: nativeTheme.shouldUseDarkColors ? '#25323f' : '#7fd0f0',
         autoHideMenuBar: true,
         webPreferences: {
             preload: path.join(import.meta.dirname, 'preload.cjs'),

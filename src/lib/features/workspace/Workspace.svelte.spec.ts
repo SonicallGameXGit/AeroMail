@@ -25,6 +25,14 @@ const openSettings = async (category: 'Accounts' | 'Privacy' | 'Notifications' =
     await page.getByRole('tab', { name: category }).click()
 }
 const settings = () => page.getByRole('dialog', { name: 'Settings' })
+const addedBox = () => page.getByRole('dialog', { name: 'Account added' })
+const addCorpAccount = async () => {
+    await page.getByRole('button', { name: 'Add account' }).click()
+    await page.getByLabelText('Email address').fill('me@corp.example')
+    await page.getByRole('button', { name: 'Continue' }).click()
+    await page.getByLabelText('Password', { exact: true }).fill(fakePassword)
+    await page.getByRole('button', { name: 'Connect' }).click()
+}
 
 describe('Workspace', () => {
     it('asks for an account when there is none, then opens the workspace', async () => {
@@ -36,8 +44,47 @@ describe('Workspace', () => {
         await page.getByLabelText('Password', { exact: true }).fill(fakePassword)
         await page.getByRole('button', { name: 'Connect' }).click()
 
+        await expect.element(addedBox().getByRole('heading', { name: 'john@gmail.com is ready' })).toBeInTheDocument()
+        await expect.element(addedBox()).toHaveTextContent('The account is added and open now.')
         await expect.element(folder('Inbox')).toBeInTheDocument()
         await expect.element(page.getByRole('button', { name: 'Account: john@gmail.com' })).toBeInTheDocument()
+
+        await addedBox().getByRole('button', { name: 'OK' }).click()
+        await expect.element(addedBox()).not.toBeInTheDocument()
+    })
+
+    it('closes the settings when an account added there is opened, then says it was added', async () => {
+        start()
+
+        await openSettings()
+        await addCorpAccount()
+
+        await expect.element(addedBox().getByRole('heading', { name: 'me@corp.example is ready' })).toBeInTheDocument()
+        await expect.element(addedBox()).toHaveTextContent('The account is added and open now.')
+        await expect.element(settings()).not.toBeInTheDocument()
+        await expect.element(page.getByRole('button', { name: 'Account: me@corp.example' })).toBeInTheDocument()
+
+        // Like a system message box: OK has the focus, Enter takes it.
+        await expect.element(addedBox().getByRole('button', { name: 'OK' })).toHaveFocus()
+        await userEvent.keyboard('{Enter}')
+        await expect.element(addedBox()).not.toBeInTheDocument()
+    })
+
+    it('keeps the settings and the open account when new accounts are not opened', async () => {
+        const state = seededState()
+        state.settings = { ...state.settings, switchToNewAccount: false }
+        render(Workspace, { api: createFakeApi(state) })
+
+        await openSettings()
+        await addCorpAccount()
+
+        await expect.element(addedBox().getByRole('heading', { name: 'me@corp.example is ready' })).toBeInTheDocument()
+        await expect.element(addedBox()).toHaveTextContent('The account is added. You can open it from the account menu at the top right.')
+        await userEvent.keyboard('{Escape}')
+        await expect.element(addedBox()).not.toBeInTheDocument()
+
+        await expect.element(settings().getByRole('button', { name: 'Remove account: me@corp.example' })).toBeInTheDocument()
+        await expect.element(page.getByRole('button', { name: 'Account: john@gmail.com', exact: true })).toBeInTheDocument()
     })
 
     it('opens the inbox with its messages and the unread count', async () => {

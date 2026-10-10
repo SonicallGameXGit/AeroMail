@@ -4,6 +4,44 @@
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <meta name="color-scheme" content="light dark" />
+        <style>
+            /*
+             * What the window shows before the app's CSS has loaded: the backdrop of
+             * design/Backdrop.svelte with its light, per theme. Keep the values in step with
+             * --backdrop-* in design/tokens.css.
+             */
+            html {
+                --backdrop-top: #2f8fd8;
+                --backdrop-middle: #7fd0f0;
+                --backdrop-bottom: #3fb68b;
+                --backdrop-light: rgba(255, 255, 255, 0.75);
+                --backdrop-bokeh: rgba(255, 255, 255, 0.28);
+            }
+
+            @media (prefers-color-scheme: dark) {
+                html {
+                    --backdrop-top: #10161d;
+                    --backdrop-middle: #25323f;
+                    --backdrop-bottom: #16303a;
+                    --backdrop-light: rgba(140, 190, 230, 0.22);
+                    --backdrop-bokeh: rgba(160, 210, 240, 0.1);
+                }
+            }
+
+            html {
+                min-height: 100%;
+                background:
+                    radial-gradient(circle at 14% 72%, var(--backdrop-bokeh) 0 70px, transparent 72px),
+                    radial-gradient(circle at 24% 86%, var(--backdrop-bokeh) 0 38px, transparent 40px),
+                    radial-gradient(circle at 82% 68%, var(--backdrop-bokeh) 0 96px, transparent 98px),
+                    radial-gradient(circle at 70% 88%, var(--backdrop-bokeh) 0 46px, transparent 48px),
+                    radial-gradient(circle at 90% 22%, var(--backdrop-bokeh) 0 30px, transparent 32px),
+                    radial-gradient(circle at 8% 24%, var(--backdrop-bokeh) 0 52px, transparent 54px),
+                    radial-gradient(ellipse 90% 55% at 50% -10%, var(--backdrop-light), transparent 70%),
+                    linear-gradient(180deg, var(--backdrop-top) 0%, var(--backdrop-middle) 55%, var(--backdrop-bottom) 100%);
+                background-attachment: fixed;
+            }
+        </style>
         %sveltekit.head%
     </head>
     <body>

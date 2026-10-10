@@ -5,15 +5,15 @@
     type Props = {
         title: string
         children: Snippet
-        wide?: boolean
+        size?: 'narrow' | 'normal' | 'wide'
     }
 
     // A glass window above the workspace; everything behind it is dimmed.
-    let { title, children, wide = false }: Props = $props()
+    let { title, children, size = 'normal' }: Props = $props()
 </script>
 
 <div class="overlay" role="dialog" aria-modal="true" aria-label={title}>
-    <GlassWindow {title} {wide}>
+    <GlassWindow {title} {size}>
         {@render children()}
     </GlassWindow>
 </div>

@@ -2,6 +2,7 @@ export const en = {
     'app.name': 'MailClient',
     'app.loading': 'Loading…',
     'app.dismiss': 'Dismiss',
+    'app.ok': 'OK',
 
     'setup.title': 'Add your email account',
     'setup.subtitle': 'Type your address and we\'ll look up the server settings for you.',
@@ -97,8 +98,13 @@ export const en = {
     'account.current': 'Account: {email}',
     'account.menu': 'Accounts',
     'account.add': 'Add account',
+    'account.added': 'Account added',
+    'account.addedHeading': '{email} is ready',
+    'account.addedOpened': 'The account is added and open now.',
+    'account.addedKept': 'The account is added. You can open it from the account menu at the top right.',
     'account.remove': 'Remove account',
-    'account.removeConfirm': 'Remove {email} from this app? Nothing is deleted on the server.',
+    'account.removeHeading': 'Remove {email}?',
+    'account.removeHint': 'Only this app forgets the account. Nothing is deleted on the server.',
     'account.removeYes': 'Remove',
     'account.removeNo': 'Keep',
 

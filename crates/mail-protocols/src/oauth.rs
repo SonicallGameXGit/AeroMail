@@ -180,12 +180,18 @@ async fn request_target(stream: &mut TcpStream) -> Option<String> {
 
 /// The page left in the browser. Plain on purpose: it is the one screen of
 /// the app that is not drawn by the app.
+/// Shown in the user's browser after the provider answers. It is drawn like the app's own
+/// window: the design tokens are the app's `tokens.css` itself (so both themes and the
+/// reduced-transparency rules come along), and the rest mirrors `Backdrop.svelte` and
+/// `GlassWindow.svelte`. Change those and this page's `answer.html` together.
+const ANSWER_PAGE: &str = include_str!("answer.html");
+const DESIGN_TOKENS: &str = include_str!("../../../src/lib/design/tokens.css");
+
 async fn respond(stream: &mut TcpStream, status: &str, title: &str, text: &str) {
-    let body = format!(
-        "<!doctype html><html><head><meta charset=\"utf-8\"><title>{title}</title></head>\
-         <body style=\"font-family:sans-serif;text-align:center;margin-top:20vh\">\
-         <h1>{title}</h1><p>{text}</p></body></html>"
-    );
+    let body = ANSWER_PAGE
+        .replace("/*tokens*/", DESIGN_TOKENS)
+        .replace("{title}", title)
+        .replace("{text}", text);
     let response = format!(
         "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\n\
          Content-Length: {}\r\nConnection: close\r\n\r\n{body}",

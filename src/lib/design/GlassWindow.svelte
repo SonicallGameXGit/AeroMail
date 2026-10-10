@@ -5,13 +5,14 @@
     type Props = {
         title: string
         children: Snippet
-        wide?: boolean
+        // narrow: a message box, as wide as its text needs.
+        size?: 'narrow' | 'normal' | 'wide'
     }
 
-    let { title, children, wide = false }: Props = $props()
+    let { title, children, size = 'normal' }: Props = $props()
 </script>
 
-<section class="window" class:wide aria-label={title}>
+<section class="window" class:wide={size === 'wide'} class:narrow={size === 'narrow'} aria-label={title}>
     <header class="title">{title}</header>
     <div class="content">
         {@render children()}
@@ -36,6 +37,12 @@
 
     .wide {
         width: min(720px, 100%);
+    }
+
+    .narrow {
+        width: fit-content;
+        min-width: min(360px, 100%);
+        max-width: min(480px, 100%);
     }
 
     .title {

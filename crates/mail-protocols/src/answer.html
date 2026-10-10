@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>{title}</title>
+<style>
+/*tokens*/
+
+*, *::before, *::after { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+    font-family: var(--font-ui);
+    font-size: var(--font-size-body);
+    line-height: 1.45;
+    color: var(--text);
+    background: var(--backdrop-middle);
+    overflow: hidden;
+    cursor: default;
+}
+.backdrop {
+    position: fixed;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    padding: var(--space-5);
+    overflow: auto;
+    background:
+        radial-gradient(ellipse 90% 55% at 50% -10%, var(--backdrop-light), transparent 70%),
+        linear-gradient(180deg, var(--backdrop-top) 0%, var(--backdrop-middle) 55%, var(--backdrop-bottom) 100%);
+}
+.bokeh {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background:
+        radial-gradient(circle at 14% 72%, var(--backdrop-bokeh) 0 70px, transparent 72px),
+        radial-gradient(circle at 24% 86%, var(--backdrop-bokeh) 0 38px, transparent 40px),
+        radial-gradient(circle at 82% 68%, var(--backdrop-bokeh) 0 96px, transparent 98px),
+        radial-gradient(circle at 70% 88%, var(--backdrop-bokeh) 0 46px, transparent 48px),
+        radial-gradient(circle at 90% 22%, var(--backdrop-bokeh) 0 30px, transparent 32px),
+        radial-gradient(circle at 8% 24%, var(--backdrop-bokeh) 0 52px, transparent 54px);
+}
+.window {
+    position: relative;
+    width: min(560px, 100%);
+    max-height: 100%;
+    display: flex;
+    flex-direction: column;
+    padding: 0 var(--space-2) var(--space-2);
+    border: 1px solid var(--glass-border-outer);
+    border-radius: var(--radius-window);
+    background: var(--glass-shine), var(--glass-tint);
+    backdrop-filter: blur(var(--glass-blur));
+    -webkit-backdrop-filter: blur(var(--glass-blur));
+    box-shadow: inset 0 0 0 1px var(--glass-border-inner), var(--glass-shadow);
+}
+.title {
+    padding: var(--space-2) var(--space-1);
+    color: var(--glass-text);
+    text-shadow: var(--glass-text-shadow);
+}
+.content {
+    min-height: 0;
+    overflow-y: auto;
+    padding: var(--space-5);
+    border: 1px solid var(--surface-border);
+    border-radius: var(--radius-control);
+    background: var(--surface);
+    color: var(--text);
+}
+h1 { margin: 0 0 var(--space-2); font-size: var(--font-size-title); font-weight: 600; }
+p { margin: 0; color: var(--text-muted); }
+</style>
+</head>
+<body>
+<div class="backdrop">
+    <div class="bokeh" aria-hidden="true"></div>
+    <section class="window" aria-label="MailClient">
+        <header class="title">MailClient</header>
+        <div class="content">
+            <h1>{title}</h1>
+            <p>{text}</p>
+        </div>
+    </section>
+</div>
+</body>
+</html>

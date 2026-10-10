@@ -108,7 +108,7 @@ MailClient/
         lib/
             api/                the only place that talks to the core (`bridge.ts`: what the shell exposes)
                 generated/      TypeScript types generated from Rust - never edit by hand
-            design/             tokens.css, base.css and the primitives (Button, Icon, Avatar, Menu, Splitter, TextField, CheckField, GlassWindow, Modal, ...)
+            design/             tokens.css, base.css and the primitives (Button, Icon, Avatar, Menu, Splitter, TextField, CheckField, GlassWindow, Modal, MessageBox, MessageIcon, ...)
             i18n/               `t()` and the dictionaries
             features/
                 accounts/       account setup screen, its logic, the fake Api for tests
@@ -305,7 +305,7 @@ Each must work on Windows, Linux and macOS, behind one interface (5.2):
 
 Works today (IMAP + SMTP, password sign-in):
 
-- Account setup: detection, manual form, real sign-in to both servers, password in the keychain; several accounts; removing an account. Gmail (and custom domains on Google's servers) signs in on Google's own page with one click, in a build given a client id (6); an app password stays one click away.
+- Account setup: detection, manual form, real sign-in to both servers, password in the keychain; several accounts; a message box says the account was added (and, when it was opened, the settings close before it shows); removing an account. Gmail (and custom domains on Google's servers) signs in on Google's own page with one click, in a build given a client id (6); an app password stays one click away.
 - Workspace layout: account menu at the top right (switch, add, open the settings); folders of the open account on the left with New message above them; message list; reader with the actions of the open message above it, grouped as answer / put away / mark. Panes are resizable, the folder list down to an icon rail.
 - Folders with roles and unread counts; message list (newest 50, "load older"); cached for offline reading; refresh on demand and every 2 minutes for the open folder.
 - Sender pictures: a brand's own logo (BIMI) under the same glass as the initials, cached, with a switch in the settings.
@@ -394,3 +394,4 @@ Newest last. One line per decision: date, decision, reason.
 - 2026-10-09 - Settings writes from the UI are queued one after another, and notification choices show before the core confirms them. Reason: the core runs requests side by side, so an earlier write finishing last stored an older value, and template fields lost typed characters.
 - 2026-10-09 - A modal window is never taller than the app's window; its content scrolls. Reason: the settings ran off the bottom of the screen once notifications were customised, and their last controls could not be reached.
 - 2026-10-09 - The settings window shows one category at a time, picked from a list with icons on its left (vertical tabs: arrow keys, Home / End), instead of one long page. The window keeps one size whatever is open, a long category scrolls on its own, and the category opened last is opened again while the app runs. A new group of settings is a new entry in that list. Reason: owner found the long page hard to find one's way in. Icons `account`, `privacy` and `bell` added for it.
+- 2026-10-09 - A short announcement or question is a `MessageBox` (design primitive, laid out like a Windows 7 task dialog: a narrow window, a large glossy picture at the top left (`MessageIcon`, drawn on its own because toolbar icons are too plain at that size), one blue line that says what it is about with the explanation under it, buttons on a grey strip along the bottom; the first button has the focus, Escape gives the safe answer). Adding an account ends in one ("Account added", OK), saying whether the account is open now; when it is opened, the settings window closes first. The removal confirmation uses it too. Reason: owner's request - adding an account ended without a word.

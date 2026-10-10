@@ -14,6 +14,7 @@
     --font-ui: 'Segoe UI', 'Selawik', 'Noto Sans', 'Open Sans', 'Helvetica Neue', system-ui, sans-serif;
     --font-size-small: 12px;
     --font-size-body: 13px;
+    --font-size-heading: 16px;
     --font-size-title: 20px;
 
     /* Space and shape */
@@ -56,6 +57,8 @@
     --text: #1b1f24;
     --text-muted: #55616f;
     --text-link: #0b5cad;
+    /* The one blue line that says what a message box is about. */
+    --heading-text: #1a4a9c;
 
     /* Controls */
     --control-face: linear-gradient(180deg, #fdfdfd 0%, #eeeeee 49%, #dcdcdc 50%, #d0d0d0 100%);
@@ -142,6 +145,13 @@
     --icon-steel-edge: #3f4c5e;
     --icon-shine: rgba(255, 255, 255, 0.5);
     --icon-ink: #ffffff;
+    --icon-ink-dark: #2b2100;
+    --icon-gloss-top: rgba(255, 255, 255, 0.9);
+    --icon-gloss-bottom: rgba(255, 255, 255, 0.08);
+    --icon-shadow: rgba(0, 0, 0, 0.35);
+
+    /* Message boxes */
+    --dialog-button-width: 84px;
 
     /* Avatars: a sender gets one of these by address */
     --avatar-1: #2f8fd8;
@@ -186,6 +196,7 @@
         --text: #e6eaee;
         --text-muted: #a3adb8;
         --text-link: #7cc0f5;
+        --heading-text: #8cc4f0;
 
         --control-face: linear-gradient(180deg, #5a626b 0%, #474e56 49%, #363c43 50%, #2f343a 100%);
         --control-face-hover: linear-gradient(180deg, #6b7885 0%, #55626f 49%, #3f4c59 50%, #384552 100%);
@@ -258,6 +269,7 @@
     --text: #e6eaee;
     --text-muted: #a3adb8;
     --text-link: #7cc0f5;
+    --heading-text: #8cc4f0;
 
     --control-face: linear-gradient(180deg, #5a626b 0%, #474e56 49%, #363c43 50%, #2f343a 100%);
     --control-face-hover: linear-gradient(180deg, #6b7885 0%, #55626f 49%, #3f4c59 50%, #384552 100%);
