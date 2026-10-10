@@ -751,12 +751,9 @@
         grid-template-rows: auto auto minmax(0, 1fr);
         width: 100%;
         height: 100%;
-        border: 1px solid var(--glass-border-outer);
-        border-radius: var(--radius-window);
         background: var(--glass-shine), var(--glass-tint);
         backdrop-filter: blur(var(--glass-blur));
         -webkit-backdrop-filter: blur(var(--glass-blur));
-        box-shadow: inset 0 0 0 1px var(--glass-border-inner), var(--glass-shadow);
         overflow: hidden;
     }
 

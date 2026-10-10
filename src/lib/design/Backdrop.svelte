@@ -26,7 +26,7 @@
 
     .fill {
         place-items: stretch;
-        padding: var(--space-2);
+        padding: 0;
         overflow: hidden;
     }
 
