@@ -13,6 +13,12 @@ pub struct OAuthProvider {
     pub authorize_url: &'static str,
     pub token_url: &'static str,
     pub scope: &'static str,
+    /// Asked for as well when the user picks the account on the page instead
+    /// of the app naming it: the provider then says which address it was.
+    pub identity_scope: &'static str,
+    /// How the page asks the user (OpenID `prompt`). When the user picks the
+    /// account there, `select_account` comes first.
+    pub prompt: &'static str,
     /// What this provider's sign-in page needs beyond the standard parameters.
     pub extra: &'static [(&'static str, &'static str)],
     /// How the provider recognises this app. Registered by the owner and
@@ -45,9 +51,12 @@ pub const PROVIDERS: &[OAuthProvider] = &[OAuthProvider {
     token_url: "https://oauth2.googleapis.com/token",
     // The only scope Google accepts for IMAP and SMTP.
     scope: "https://mail.google.com/",
-    // `offline` asks for a token that outlives the hour; `consent` makes
-    // Google hand one out again when the account is added a second time.
-    extra: &[("access_type", "offline"), ("prompt", "consent")],
+    identity_scope: "openid email",
+    // `consent` makes Google hand out a lasting token again when the account
+    // is added a second time.
+    prompt: "consent",
+    // `offline` asks for a token that outlives the hour.
+    extra: &[("access_type", "offline")],
     client_id: option_env!("MAILCLIENT_GOOGLE_CLIENT_ID"),
     client_secret: option_env!("MAILCLIENT_GOOGLE_CLIENT_SECRET"),
 }];
@@ -78,6 +87,9 @@ pub struct Tokens {
     pub refresh: Option<String>,
     /// Seconds until `access` stops working.
     pub expires_in: u64,
+    /// The address the user signed in as, when the provider said so and
+    /// vouches for it.
+    pub email: Option<String>,
 }
 
 /// A sign-in that waits for the user: the page to open in their browser, and

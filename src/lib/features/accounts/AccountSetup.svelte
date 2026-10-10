@@ -1,13 +1,16 @@
 <script lang="ts">
+    import { onMount } from 'svelte'
     import { toMailError } from '$lib/api'
     import type {
         Account,
         AccountSettings,
         AddressError,
         Api,
+        Brand,
         Detection,
         MailError,
         Protocol,
+        ProviderChoice,
         Security,
         ServerRole,
         SettingsIssue,
@@ -61,6 +64,15 @@
     let connectError = $state<MailError | null>(null)
     // The sign-in the user is finishing in the browser right now.
     let waiting = $state<SignIn | null>(null)
+    // Providers whose account can be picked on their own page, without typing it.
+    let choices = $state<ProviderChoice[]>([])
+
+    onMount(() => {
+        // Without them the address field is the way in, as always.
+        api.signInChoices().then((found) => {
+            choices = found
+        }).catch(() => undefined)
+    })
 
     const run = async (action: () => Promise<void>) => {
         busy = true
@@ -181,14 +193,11 @@
         }
     })
 
-    const signIn = (current: AccountSettings) => run(async () => {
-        if (!await check(current)) {
-            return
-        }
-
+    // Opens the provider's page in the browser and waits until the user is done there.
+    const follow = async (begin: () => Promise<SignIn>) => {
         let started: SignIn | null = null
         try {
-            started = await api.beginSignIn(current)
+            started = await begin()
             waiting = started
             await api.openExternal(started.url)
             onadded(await api.finishSignIn(started.id))
@@ -204,6 +213,20 @@
         } finally {
             waiting = null
         }
+    }
+
+    const signIn = (current: AccountSettings) => run(async () => {
+        if (!await check(current)) {
+            return
+        }
+
+        await follow(() => api.beginSignIn(current))
+    })
+
+    // The user picks the account on the provider's page; it is added as if typed here.
+    const chooseAccount = (brand: Brand) => run(async () => {
+        connectError = null
+        await follow(() => api.beginChosenSignIn(brand))
     })
 
     const cancelSignIn = () => {
@@ -224,6 +247,26 @@
 {#snippet mark()}
     {#if typed.type === 'known'}
         <BrandMark brand={typed.brand} label={t('setup.recognized', { provider: typed.provider })} />
+    {/if}
+{/snippet}
+
+<!-- How a sign-in on the provider's page is going, and why it failed. -->
+{#snippet progress()}
+    {#if connectError !== null}
+        <Notice kind="danger">
+            {errorMessage(connectError)}
+            <small>{t('error.details')}: {connectError.detail}</small>
+        </Notice>
+    {/if}
+    {#if failed}
+        <Notice kind="danger">{t('setup.failed')}</Notice>
+    {/if}
+    {#if waiting !== null}
+        {@const started = waiting}
+        <Notice>
+            {t('setup.signInWaiting')}
+            <Button variant="link" onclick={() => reopen(started)}>{t('setup.signInReopen')}</Button>
+        </Notice>
     {/if}
 {/snippet}
 
@@ -259,15 +302,38 @@
         {#if addressError !== null}
             <Notice kind="danger">{t(`address.${addressError}`)}</Notice>
         {/if}
-        {#if failed}
-            <Notice kind="danger">{t('setup.failed')}</Notice>
+
+        {#if choices.length > 0}
+            <div class="choices">
+                <p class="divider">{t('setup.orUsing')}</p>
+                <div class="providers">
+                    {#each choices as choice (choice.brand)}
+                        {#snippet picture()}
+                            <BrandMark
+                                brand={choice.brand}
+                                label={t('setup.signIn', { provider: choice.provider })}
+                                size={18}
+                            />
+                        {/snippet}
+                        <Button {picture} disabled={busy} onclick={() => chooseAccount(choice.brand)}>
+                            {choice.provider}
+                        </Button>
+                    {/each}
+                </div>
+            </div>
         {/if}
 
+        {@render progress()}
+
         <div class="actions">
-            {#if oncancel !== undefined}
-                <Button variant="link" disabled={busy} onclick={oncancel}>{t('setup.cancel')}</Button>
+            {#if waiting !== null}
+                <Button variant="link" onclick={cancelSignIn}>{t('setup.signInCancel')}</Button>
+            {:else}
+                {#if oncancel !== undefined}
+                    <Button variant="link" disabled={busy} onclick={oncancel}>{t('setup.cancel')}</Button>
+                {/if}
+                <Button variant="link" disabled={busy} onclick={() => lookUp(true)}>{t('setup.manual')}</Button>
             {/if}
-            <Button variant="link" disabled={busy} onclick={() => lookUp(true)}>{t('setup.manual')}</Button>
             <span class="spacer"></span>
             <Button variant="accent" type="submit" disabled={busy}>{t('setup.continue')}</Button>
         </div>
@@ -364,22 +430,7 @@
                 <strong>{t(`role.${issue.server}`)}:</strong> {t(`issue.${issue.kind}`)}
             </Notice>
         {/each}
-        {#if connectError !== null}
-            <Notice kind="danger">
-                {errorMessage(connectError)}
-                <small>{t('error.details')}: {connectError.detail}</small>
-            </Notice>
-        {/if}
-        {#if failed}
-            <Notice kind="danger">{t('setup.failed')}</Notice>
-        {/if}
-        {#if waiting !== null}
-            {@const started = waiting}
-            <Notice>
-                {t('setup.signInWaiting')}
-                <Button variant="link" onclick={() => reopen(started)}>{t('setup.signInReopen')}</Button>
-            </Notice>
-        {/if}
+        {@render progress()}
 
         <div class="actions">
             {#if waiting !== null}
@@ -458,6 +509,34 @@
         margin-top: var(--space-1);
         color: var(--text-muted);
         overflow-wrap: anywhere;
+    }
+
+    .choices {
+        display: grid;
+        gap: var(--space-2);
+    }
+
+    /* A rule on each side of the words. */
+    .divider {
+        display: flex;
+        align-items: center;
+        gap: var(--space-3);
+        font-size: var(--font-size-small);
+        color: var(--text-muted);
+    }
+
+    .divider::before,
+    .divider::after {
+        content: '';
+        flex: 1;
+        border-top: 1px solid var(--surface-border);
+    }
+
+    .providers {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: var(--space-2);
     }
 
     .actions {

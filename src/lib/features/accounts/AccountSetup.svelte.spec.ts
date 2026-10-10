@@ -3,7 +3,14 @@ import { page } from 'vitest/browser'
 import { render } from 'vitest-browser-svelte'
 import type { DetectResult, TypedDomain } from '$lib/api'
 import AccountSetup from './AccountSetup.svelte'
-import { createFakeApi, emptyState, fakePassword, fakeSignInUrl, gmailSignInDetection } from './fakeApi'
+import {
+    createFakeApi,
+    emptyState,
+    fakePassword,
+    fakeSignInUrl,
+    gmailSignInDetection,
+    pickedAddress,
+} from './fakeApi'
 
 const typeAddress = async (email: string) => {
     await page.getByLabelText('Email address').fill(email)
@@ -141,6 +148,65 @@ describe('AccountSetup', () => {
 
         await expect.element(page.getByRole('alert')).toHaveTextContent('Outgoing mail: The server couldn\'t be reached')
         await expect.element(page.getByLabelText('Server').first()).toHaveValue('imap.gmail.com')
+    })
+
+    describe('by picking the account on the provider\'s page', () => {
+        const gmail = () => page.getByRole('button', { name: 'Gmail', exact: true })
+
+        it('adds the picked account with one click, without typing the address', async () => {
+            const { state, onadded } = start()
+
+            await expect.element(page.getByText('or using')).toBeInTheDocument()
+            await gmail().click()
+
+            await vi.waitFor(() => expect(onadded).toHaveBeenCalledOnce())
+            expect(state.opened).toEqual([fakeSignInUrl])
+            expect(state.accounts.map((account) => account.settings.email)).toEqual([pickedAddress])
+            expect(state.accounts.map((account) => account.settings.incoming.auth)).toEqual(['OAuth2'])
+        })
+
+        it('offers nothing where the build cannot sign in there', async () => {
+            start({ signInChoices: async () => [] })
+
+            await expect.element(page.getByLabelText('Email address')).toBeInTheDocument()
+            await expect.element(page.getByText('or using')).not.toBeInTheDocument()
+            await expect.element(gmail()).not.toBeInTheDocument()
+        })
+
+        it('waits for the browser and can be cancelled without an error', async () => {
+            let giveUp = (): void => undefined
+            const cancelSignIn = vi.fn(async () => giveUp())
+            const { onadded } = start({
+                finishSignIn: () => new Promise((_resolve, reject) => {
+                    giveUp = () => reject({ kind: 'SignIn', server: null, detail: 'the sign-in was cancelled' })
+                }),
+                cancelSignIn,
+            })
+
+            await gmail().click()
+            await expect.element(page.getByText('Finish signing in in your browser')).toBeInTheDocument()
+            await expect.element(gmail()).toBeDisabled()
+            await page.getByRole('button', { name: 'Cancel sign-in' }).click()
+
+            await expect.element(gmail()).toBeEnabled()
+            await expect.element(page.getByRole('button', { name: 'Set up manually' })).toBeEnabled()
+            await expect.element(page.getByRole('alert')).not.toBeInTheDocument()
+            expect(cancelSignIn).toHaveBeenCalledWith(1)
+            expect(onadded).not.toHaveBeenCalled()
+        })
+
+        it('says when the picked account is already in the app', async () => {
+            const { onadded } = start({
+                finishSignIn: async () => {
+                    throw { kind: 'Duplicate', server: null, detail: 'this account is already added' }
+                },
+            })
+
+            await gmail().click()
+
+            await expect.element(page.getByRole('alert')).toHaveTextContent('This account is already in the app.')
+            expect(onadded).not.toHaveBeenCalled()
+        })
     })
 
     describe('on the provider\'s own page', () => {

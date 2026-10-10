@@ -67,14 +67,16 @@ fn detect_with(
     let address = EmailAddress::parse(email)?;
 
     let detection = match providers::find(address.domain()) {
-        Some(provider) => from_provider(&address, provider, sign_in_ready(provider.imap.host)),
+        Some(provider) => {
+            from_provider(&address.full(), provider, sign_in_ready(provider.imap.host))
+        }
         None => guess(&address),
     };
 
     Ok(detection)
 }
 
-fn from_provider(address: &EmailAddress, provider: &Provider, sign_in_ready: bool) -> Detection {
+fn from_provider(email: &str, provider: &Provider, sign_in_ready: bool) -> Detection {
     // The provider's page is the one-click way. Where it cannot be used and
     // a password works too, the password is suggested instead of a dead end.
     let auth = match provider.auth {
@@ -87,7 +89,7 @@ fn from_provider(address: &EmailAddress, provider: &Provider, sign_in_ready: boo
         port: endpoint.port,
         security: endpoint.security,
         auth,
-        username: address.full(),
+        username: email.to_string(),
     };
 
     Detection {
@@ -96,7 +98,7 @@ fn from_provider(address: &EmailAddress, provider: &Provider, sign_in_ready: boo
         password_kind: provider.password_kind,
         sign_in_available: sign_in_ready,
         settings: AccountSettings {
-            email: address.full(),
+            email: email.to_string(),
             display_name: String::new(),
             incoming: server(Protocol::Imap, &provider.imap),
             outgoing: server(Protocol::Smtp, &provider.smtp),
@@ -106,6 +108,53 @@ fn from_provider(address: &EmailAddress, provider: &Provider, sign_in_ready: boo
             .as_ref()
             .map(|endpoint| server(Protocol::Pop3, endpoint)),
     }
+}
+
+/// A provider the user can add an account of without typing the address:
+/// they pick the account on the provider's own page.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, TS)]
+#[ts(export)]
+pub struct ProviderChoice {
+    pub brand: Brand,
+    pub provider: String,
+}
+
+/// The providers with a mark whose page this build can sign in on.
+pub fn sign_in_choices() -> Vec<ProviderChoice> {
+    sign_in_choices_with(mail_core::oauth::sign_in_ready)
+}
+
+fn sign_in_choices_with(sign_in_ready: impl Fn(&str) -> bool) -> Vec<ProviderChoice> {
+    providers::PROVIDERS
+        .iter()
+        .filter(|provider| provider.auth == AuthMethod::OAuth2 && sign_in_ready(provider.imap.host))
+        .filter_map(|provider| {
+            provider.brand.map(|brand| ProviderChoice {
+                brand,
+                provider: provider.name.to_string(),
+            })
+        })
+        .collect()
+}
+
+/// The provider's settings for signing in on its page, without an address:
+/// it is filled in from the account the user picks there. `None` when this
+/// build cannot sign in there.
+pub fn sign_in_settings(brand: Brand) -> Option<AccountSettings> {
+    sign_in_settings_with(brand, mail_core::oauth::sign_in_ready)
+}
+
+fn sign_in_settings_with(
+    brand: Brand,
+    sign_in_ready: impl Fn(&str) -> bool,
+) -> Option<AccountSettings> {
+    let provider = providers::PROVIDERS.iter().find(|provider| {
+        provider.brand == Some(brand)
+            && provider.auth == AuthMethod::OAuth2
+            && sign_in_ready(provider.imap.host)
+    })?;
+
+    Some(from_provider("", provider, true).settings)
 }
 
 fn guess(address: &EmailAddress) -> Detection {
@@ -142,6 +191,27 @@ mod tests {
     /// A build without any registered client id, whatever this one has.
     fn detect(email: &str) -> Result<Detection, AddressError> {
         detect_with(email, |_| false)
+    }
+
+    #[test]
+    fn gmail_is_offered_without_an_address_only_where_the_build_can_sign_in() {
+        assert_eq!(sign_in_choices_with(|_| false), Vec::new());
+        assert_eq!(
+            sign_in_choices_with(|host| host == "imap.gmail.com"),
+            vec![ProviderChoice {
+                brand: Brand::Gmail,
+                provider: "Gmail".to_string(),
+            }],
+        );
+
+        assert_eq!(sign_in_settings_with(Brand::Gmail, |_| false), None);
+        let settings = sign_in_settings_with(Brand::Gmail, |_| true).unwrap();
+        assert_eq!(settings.email, "");
+        assert_eq!(settings.incoming.host, "imap.gmail.com");
+        assert_eq!(settings.incoming.username, "");
+        assert_eq!(settings.incoming.auth, AuthMethod::OAuth2);
+        assert_eq!(settings.outgoing.host, "smtp.gmail.com");
+        assert_eq!(settings.outgoing.auth, AuthMethod::OAuth2);
     }
 
     #[test]

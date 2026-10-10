@@ -128,9 +128,10 @@ pub trait PendingSignIn: Send {
 /// the browser and talks to the provider (`mail-protocols`).
 #[async_trait]
 pub trait SignInFlow: Send + Sync {
-    /// Prepares a sign-in for the provider behind the mail server `host`;
-    /// `email` only pre-selects the account on the page.
-    async fn begin(&self, host: &str, email: &str) -> MailResult<Box<dyn PendingSignIn>>;
+    /// Prepares a sign-in for the provider behind the mail server `host`.
+    /// `email` only pre-selects the account on the page; without it the user
+    /// picks one there, and the tokens say which (`Tokens::email`).
+    async fn begin(&self, host: &str, email: Option<&str>) -> MailResult<Box<dyn PendingSignIn>>;
 
     /// Gets a fresh access token from the long-lived one.
     async fn refresh(&self, host: &str, refresh_token: &str) -> MailResult<Tokens>;

@@ -30,6 +30,11 @@ struct Email {
 }
 
 #[derive(Deserialize)]
+struct Chosen {
+    brand: mail_autoconfig::Brand,
+}
+
+#[derive(Deserialize)]
 struct Settings {
     settings: AccountSettings,
 }
@@ -182,6 +187,19 @@ pub async fn dispatch(engine: &Engine, command: &str, params: Value) -> Result<V
         "begin_sign_in" => {
             let Settings { settings } = args(params)?;
             reply(engine.begin_sign_in(settings).await)
+        }
+        // Adding an account the user picks on the provider's page, without
+        // typing its address; finished and cancelled like the one above.
+        "sign_in_choices" => Ok(encode(&mail_autoconfig::sign_in_choices())),
+        "begin_chosen_sign_in" => {
+            let Chosen { brand } = args(params)?;
+            let Some(settings) = mail_autoconfig::sign_in_settings(brand) else {
+                return Err(encode(&MailError::new(
+                    ErrorKind::Unsupported,
+                    format!("this build cannot sign in with {brand:?}"),
+                )));
+            };
+            reply(engine.begin_chosen_sign_in(settings).await)
         }
         "finish_sign_in" => {
             let SignInId { sign_in_id } = args(params)?;

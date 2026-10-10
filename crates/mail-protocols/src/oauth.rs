@@ -84,7 +84,9 @@ struct Pending {
     url: String,
 }
 
-async fn begin(provider: OAuthProvider, email: &str) -> MailResult<Pending> {
+/// `email` names the account to sign in with; without it the user picks one
+/// on the page, and the provider is asked to say which.
+async fn begin(provider: OAuthProvider, email: Option<&str>) -> MailResult<Pending> {
     let client_id = provider.client_id().unwrap_or_default();
 
     // Only this machine can reach it, and the system picks a free port.
@@ -97,17 +99,28 @@ async fn begin(provider: OAuthProvider, email: &str) -> MailResult<Pending> {
     let state = random_text()?;
     let verifier = random_text()?;
     let challenge = URL_SAFE_NO_PAD.encode(digest(&SHA256, verifier.as_bytes()));
+    let (scope, prompt) = match email {
+        Some(_) => (provider.scope.to_string(), provider.prompt.to_string()),
+        // The list of accounts is shown even to a browser signed in to one.
+        None => (
+            format!("{} {}", provider.scope, provider.identity_scope),
+            format!("select_account {}", provider.prompt),
+        ),
+    };
 
     let mut parameters = vec![
         ("response_type", "code"),
         ("client_id", client_id),
         ("redirect_uri", redirect.as_str()),
-        ("scope", provider.scope),
+        ("scope", scope.as_str()),
+        ("prompt", prompt.as_str()),
         ("state", state.as_str()),
         ("code_challenge", challenge.as_str()),
         ("code_challenge_method", "S256"),
-        ("login_hint", email),
     ];
+    if let Some(email) = email {
+        parameters.push(("login_hint", email));
+    }
     parameters.extend_from_slice(provider.extra);
     let url = Url::parse_with_params(provider.authorize_url, parameters)
         .map_err(|error| MailError::new(ErrorKind::Protocol, error.to_string()))?
@@ -280,8 +293,33 @@ struct TokenAnswer {
     access_token: Option<String>,
     refresh_token: Option<String>,
     expires_in: Option<u64>,
+    /// Who signed in, when the identity scope was asked for (OpenID Connect).
+    id_token: Option<String>,
     error: Option<String>,
     error_description: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct Identity {
+    aud: Option<String>,
+    email: Option<String>,
+    email_verified: Option<bool>,
+}
+
+/// The address an ID token names, when the provider vouches for it and the
+/// token was made for this app. Its signature is not checked: it came
+/// straight from the provider's token address over a verified TLS
+/// connection, which OpenID Connect accepts in place of one (Core 1.0,
+/// 3.1.3.7).
+fn signed_in_as(id_token: &str, client_id: &str) -> Option<String> {
+    let payload = id_token.split('.').nth(1)?;
+    let bytes = URL_SAFE_NO_PAD.decode(payload.trim_end_matches('=')).ok()?;
+    let identity: Identity = serde_json::from_slice(&bytes).ok()?;
+    if identity.aud.as_deref() != Some(client_id) || identity.email_verified != Some(true) {
+        return None;
+    }
+
+    identity.email.filter(|email| !email.trim().is_empty())
 }
 
 /// One question to the provider's token address. Errors carry the
@@ -348,12 +386,15 @@ async fn request_tokens(provider: &OAuthProvider, grant: &[(&str, &str)]) -> Mai
         refresh: answer.refresh_token,
         // Unknown lifetime: treated as used up, so it is renewed every time.
         expires_in: answer.expires_in.unwrap_or(0),
+        email: answer
+            .id_token
+            .and_then(|token| signed_in_as(&token, provider.client_id().unwrap_or_default())),
     })
 }
 
 #[async_trait]
 impl SignInFlow for NetSignIn {
-    async fn begin(&self, host: &str, email: &str) -> MailResult<Box<dyn PendingSignIn>> {
+    async fn begin(&self, host: &str, email: Option<&str>) -> MailResult<Box<dyn PendingSignIn>> {
         let pending = begin(provider_of(host)?, email).await?;
 
         Ok(Box::new(pending))
@@ -413,6 +454,8 @@ mod tests {
                 authorize_url: "https://accounts.example.com/auth",
                 token_url: self.url,
                 scope: "mail",
+                identity_scope: "openid email",
+                prompt: "consent",
                 extra: &[("access_type", "offline")],
                 client_id: Some("app-id"),
                 client_secret: Some("app-secret"),
@@ -454,6 +497,12 @@ mod tests {
             (
                 "400 Bad Request",
                 r#"{"error":"invalid_grant","error_description":"Token has been expired or revoked."}"#,
+            )
+        } else if body.contains("code=chosen") {
+            // Signed by nobody: the token is only trusted for how it arrived.
+            (
+                "200 OK",
+                r#"{"access_token":"access-1","refresh_token":"refresh-1","expires_in":3599,"id_token":"eyJhbGciOiJSUzI1NiJ9.eyJhdWQiOiJhcHAtaWQiLCJlbWFpbCI6ImNob3NlbkBleGFtcGxlLmNvbSIsImVtYWlsX3ZlcmlmaWVkIjp0cnVlfQ.c2lnbmF0dXJl"}"#,
             )
         } else {
             (
@@ -500,7 +549,9 @@ mod tests {
     #[tokio::test]
     async fn a_sign_in_trades_the_browsers_answer_for_tokens() {
         let tokens = FakeTokens::start().await;
-        let pending = begin(tokens.provider(), "me@example.com").await.unwrap();
+        let pending = begin(tokens.provider(), Some("me@example.com"))
+            .await
+            .unwrap();
 
         let url = pending.url().to_string();
         assert!(url.starts_with("https://accounts.example.com/auth?"));
@@ -508,6 +559,7 @@ mod tests {
         assert_eq!(parameter(&url, "client_id"), "app-id");
         assert_eq!(parameter(&url, "scope"), "mail");
         assert_eq!(parameter(&url, "login_hint"), "me@example.com");
+        assert_eq!(parameter(&url, "prompt"), "consent");
         assert_eq!(parameter(&url, "code_challenge_method"), "S256");
         assert_eq!(parameter(&url, "access_type"), "offline");
         let redirect = parameter(&url, "redirect_uri");
@@ -534,6 +586,7 @@ mod tests {
                 access: "access-1".to_string(),
                 refresh: Some("refresh-1".to_string()),
                 expires_in: 3599,
+                email: None,
             }
         );
 
@@ -555,9 +608,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn without_an_address_the_user_picks_the_account_and_the_provider_says_which() {
+        let tokens = FakeTokens::start().await;
+        let pending = begin(tokens.provider(), None).await.unwrap();
+
+        let url = pending.url().to_string();
+        assert!(!url.contains("login_hint"));
+        assert_eq!(parameter(&url, "scope"), "mail openid email");
+        assert_eq!(parameter(&url, "prompt"), "select_account consent");
+        let redirect = parameter(&url, "redirect_uri");
+        let state = parameter(&url, "state");
+
+        let finishing = tokio::spawn(Box::new(pending).finish());
+        visit(&redirect, &format!("/?state={state}&code=chosen")).await;
+
+        let received = finishing.await.unwrap().unwrap();
+        assert_eq!(received.email.as_deref(), Some("chosen@example.com"));
+    }
+
+    #[test]
+    fn an_id_token_is_believed_only_for_this_app_and_a_verified_address() {
+        let token = |claims: &str| format!("e30.{}.c2ln", URL_SAFE_NO_PAD.encode(claims));
+        let read = |claims: &str| signed_in_as(&token(claims), "app-id");
+
+        assert_eq!(
+            read(r#"{"aud":"app-id","email":"me@example.com","email_verified":true}"#).as_deref(),
+            Some("me@example.com")
+        );
+        assert_eq!(
+            read(r#"{"aud":"another-app","email":"me@example.com","email_verified":true}"#),
+            None
+        );
+        assert_eq!(
+            read(r#"{"aud":"app-id","email":"me@example.com","email_verified":false}"#),
+            None
+        );
+        assert_eq!(read(r#"{"aud":"app-id","email_verified":true}"#), None);
+        assert_eq!(signed_in_as("not a token", "app-id"), None);
+        assert_eq!(signed_in_as("e30.!!!.c2ln", "app-id"), None);
+    }
+
+    #[tokio::test]
     async fn a_refusal_on_the_page_ends_the_sign_in() {
         let tokens = FakeTokens::start().await;
-        let pending = begin(tokens.provider(), "me@example.com").await.unwrap();
+        let pending = begin(tokens.provider(), Some("me@example.com"))
+            .await
+            .unwrap();
         let redirect = parameter(pending.url(), "redirect_uri");
         let state = parameter(pending.url(), "state");
 
@@ -574,8 +670,8 @@ mod tests {
     #[tokio::test]
     async fn every_sign_in_has_its_own_state_and_verifier() {
         let tokens = FakeTokens::start().await;
-        let first = begin(tokens.provider(), "me@example.com").await.unwrap();
-        let second = begin(tokens.provider(), "me@example.com").await.unwrap();
+        let first = begin(tokens.provider(), None).await.unwrap();
+        let second = begin(tokens.provider(), None).await.unwrap();
 
         assert_ne!(first.state, second.state);
         assert_ne!(first.verifier, second.verifier);
@@ -620,7 +716,7 @@ mod tests {
     #[tokio::test]
     async fn a_server_without_a_known_sign_in_page_is_unsupported() {
         let error = NetSignIn
-            .begin("imap.example.com", "me@example.com")
+            .begin("imap.example.com", Some("me@example.com"))
             .await
             .err()
             .unwrap();

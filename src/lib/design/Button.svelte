@@ -11,6 +11,8 @@
         tone?: 'neutral' | 'danger'
         size?: 'normal' | 'large'
         icon?: IconName
+        // A picture of its own in place of `icon`, like a provider's mark.
+        picture?: Snippet
         // Names a button that shows only an icon; also its tooltip.
         label?: string
         // Set for a button that stays on or off.
@@ -29,6 +31,7 @@
         tone = 'neutral',
         size = 'normal',
         icon,
+        picture,
         label,
         pressed,
         type = 'button',
@@ -53,6 +56,8 @@
 >
     {#if icon !== undefined}
         <Icon name={icon} size={size === 'large' ? 22 : 18} />
+    {:else if picture !== undefined}
+        {@render picture()}
     {/if}
     {#if children !== undefined}
         <span class="label">{@render children()}</span>

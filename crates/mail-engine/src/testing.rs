@@ -462,8 +462,9 @@ pub struct FakeSignIn {
     pub lifetime: Mutex<u64>,
     /// The user took the app's permission back at the provider.
     pub revoked: Mutex<bool>,
-    /// Server and address of every sign-in that was begun.
-    pub begun: Mutex<Vec<(String, String)>>,
+    /// Server and address of every sign-in that was begun; no address when
+    /// the user picks the account on the page.
+    pub begun: Mutex<Vec<(String, Option<String>)>>,
     pub renewals: Mutex<u32>,
     issued: Mutex<u32>,
     browser: Mutex<Option<oneshot::Sender<MailResult<Tokens>>>>,
@@ -512,6 +513,7 @@ impl FakeSignIn {
             access,
             refresh: None,
             expires_in: *self.lifetime.lock().unwrap(),
+            email: None,
         }
     }
 
@@ -528,6 +530,17 @@ impl FakeSignIn {
         }));
     }
 
+    /// The user picks `email` from the provider's list of accounts and
+    /// allows the app; the provider says which account it was, or, with
+    /// `None`, does not.
+    pub fn approve_as(&self, email: Option<&str>) {
+        self.answer(Ok(Tokens {
+            refresh: Some(REFRESH_TOKEN.to_string()),
+            email: email.map(str::to_string),
+            ..self.issue()
+        }));
+    }
+
     /// The user presses "Cancel" on the provider's page.
     pub fn refuse(&self) {
         self.answer(Err(MailError::new(
@@ -539,7 +552,7 @@ impl FakeSignIn {
 
 #[async_trait]
 impl SignInFlow for FakeSignIn {
-    async fn begin(&self, host: &str, email: &str) -> MailResult<Box<dyn PendingSignIn>> {
+    async fn begin(&self, host: &str, email: Option<&str>) -> MailResult<Box<dyn PendingSignIn>> {
         if host != "imap.example.com" {
             return Err(MailError::new(
                 ErrorKind::Unsupported,
@@ -549,7 +562,7 @@ impl SignInFlow for FakeSignIn {
         self.begun
             .lock()
             .unwrap()
-            .push((host.to_string(), email.to_string()));
+            .push((host.to_string(), email.map(str::to_string)));
 
         let (browser, answer) = oneshot::channel();
         *self.browser.lock().unwrap() = Some(browser);

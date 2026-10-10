@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use mail_core::account::ServerRole;
+use mail_core::account::{AccountSettings, ServerRole};
 use mail_core::draft::ReplyMode;
 use mail_core::error::ErrorKind;
 use mail_core::mail::{Account, Folder, FolderRole, MailEvent, MessageContent, OutgoingMessage};
@@ -198,7 +198,7 @@ async fn the_same_account_cannot_be_added_twice() {
         .await
         .unwrap_err();
 
-    assert_eq!(error.kind, ErrorKind::Invalid);
+    assert_eq!(error.kind, ErrorKind::Duplicate);
     assert_eq!(world.engine.list_accounts().unwrap().len(), 1);
 }
 
@@ -252,7 +252,10 @@ async fn signing_in_adds_the_account_and_keeps_only_the_lasting_token() {
     assert_eq!(world.engine.list_accounts().unwrap(), vec![account.clone()]);
     assert_eq!(
         *world.sign_in.begun.lock().unwrap(),
-        vec![("imap.example.com".to_string(), "me@example.com".to_string())],
+        vec![(
+            "imap.example.com".to_string(),
+            Some("me@example.com".to_string())
+        )],
     );
     assert_eq!(
         kept_secret(&world, &account).as_deref(),
@@ -377,8 +380,92 @@ async fn an_account_that_is_already_added_does_not_open_the_browser_again() {
         .await
         .unwrap_err();
 
-    assert_eq!(error.kind, ErrorKind::Invalid);
+    assert_eq!(error.kind, ErrorKind::Duplicate);
     assert_eq!(world.sign_in.begun.lock().unwrap().len(), 1);
+}
+
+/// Settings for the provider's servers, before anyone has picked an account.
+fn no_address(mut settings: AccountSettings) -> AccountSettings {
+    settings.email = String::new();
+    settings.incoming.username = String::new();
+    settings.outgoing.username = String::new();
+
+    settings
+}
+
+#[tokio::test]
+async fn an_account_picked_on_the_providers_page_is_added_under_its_address() {
+    let world = world();
+
+    let started = world
+        .engine
+        .begin_chosen_sign_in(no_address(sign_in_settings()))
+        .await
+        .unwrap();
+    assert_eq!(started.url, SIGN_IN_URL);
+    assert_eq!(
+        *world.sign_in.begun.lock().unwrap(),
+        vec![("imap.example.com".to_string(), None)],
+    );
+
+    world.sign_in.approve_as(Some("Picked@Example.com"));
+    let account = world.engine.finish_sign_in(started.id).await.unwrap();
+
+    assert_eq!(account.settings.email, "Picked@Example.com");
+    assert_eq!(account.settings.incoming.username, "Picked@Example.com");
+    assert_eq!(account.settings.outgoing.username, "Picked@Example.com");
+    assert_eq!(world.engine.list_accounts().unwrap(), vec![account.clone()]);
+    assert_eq!(
+        kept_secret(&world, &account).as_deref(),
+        Some(REFRESH_TOKEN)
+    );
+}
+
+#[tokio::test]
+async fn picking_an_account_that_is_already_added_adds_nothing() {
+    let (world, existing) = with_signed_in_account().await;
+
+    let started = world
+        .engine
+        .begin_chosen_sign_in(no_address(sign_in_settings()))
+        .await
+        .unwrap();
+    world.sign_in.approve_as(Some("me@example.com"));
+    let error = world.engine.finish_sign_in(started.id).await.unwrap_err();
+
+    assert_eq!(error.kind, ErrorKind::Duplicate);
+    assert_eq!(world.engine.list_accounts().unwrap(), vec![existing]);
+}
+
+#[tokio::test]
+async fn a_provider_that_does_not_say_which_account_was_picked_adds_nothing() {
+    let world = world();
+
+    let started = world
+        .engine
+        .begin_chosen_sign_in(no_address(sign_in_settings()))
+        .await
+        .unwrap();
+    world.sign_in.approve_as(None);
+    let error = world.engine.finish_sign_in(started.id).await.unwrap_err();
+
+    assert_eq!(error.kind, ErrorKind::SignIn);
+    assert_eq!(world.engine.list_accounts().unwrap(), Vec::new());
+    assert!(world.secrets.values.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn picking_an_account_needs_settings_for_the_providers_page() {
+    let world = world();
+
+    let error = world
+        .engine
+        .begin_chosen_sign_in(no_address(settings()))
+        .await
+        .unwrap_err();
+
+    assert_eq!(error.kind, ErrorKind::Invalid);
+    assert!(world.sign_in.begun.lock().unwrap().is_empty());
 }
 
 #[tokio::test]

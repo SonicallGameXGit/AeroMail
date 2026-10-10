@@ -22,6 +22,8 @@ pub enum ErrorKind {
     Protocol,
     /// The settings are not valid.
     Invalid,
+    /// The account is in the app already.
+    Duplicate,
     /// The OS keychain is unavailable or refused the request.
     Keychain,
     /// The local database failed.

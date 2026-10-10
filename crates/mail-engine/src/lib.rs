@@ -124,6 +124,9 @@ impl IncomingSession for Disconnected {
 struct WaitingSignIn {
     id: u32,
     settings: AccountSettings,
+    /// The user picks the account on the provider's page: `settings` have
+    /// no address until the provider says which it was.
+    chosen: bool,
     /// Taken by the one call that waits for the browser.
     flow: Option<Box<dyn PendingSignIn>>,
     cancelled: Arc<Notify>,
@@ -190,6 +193,15 @@ fn no_sign_in(detail: impl Into<String>) -> MailError {
 /// same: `validate` refuses settings where they differ.
 fn uses_sign_in(settings: &AccountSettings) -> bool {
     settings.incoming.auth == AuthMethod::OAuth2
+}
+
+/// The settings, signing in as `email` on both servers.
+fn with_address(mut settings: AccountSettings, email: &str) -> AccountSettings {
+    settings.email = email.to_string();
+    settings.incoming.username = email.to_string();
+    settings.outgoing.username = email.to_string();
+
+    settings
 }
 
 fn trimmed(mut settings: AccountSettings) -> AccountSettings {
@@ -392,7 +404,10 @@ impl Engine {
                     .eq_ignore_ascii_case(&settings.incoming.host)
         });
         if duplicate {
-            return Err(invalid("this account is already added"));
+            return Err(MailError::new(
+                ErrorKind::Duplicate,
+                "this account is already added",
+            ));
         }
 
         Ok(())
@@ -466,14 +481,40 @@ impl Engine {
 
         let flow = self
             .sign_in
-            .begin(&settings.incoming.host, &settings.email)
+            .begin(&settings.incoming.host, Some(&settings.email))
             .await?;
+
+        self.wait_for(settings, flow, false)
+    }
+
+    /// `begin_sign_in` for an account the user picks on the provider's page:
+    /// the address in `settings` (and the usernames) are filled in from the
+    /// provider's answer. Everything else is checked once it is known.
+    pub async fn begin_chosen_sign_in(&self, settings: AccountSettings) -> MailResult<SignIn> {
+        let settings = trimmed(settings);
+        if !uses_sign_in(&settings) {
+            return Err(invalid("these settings sign in with a password"));
+        }
+
+        let flow = self.sign_in.begin(&settings.incoming.host, None).await?;
+
+        self.wait_for(settings, flow, true)
+    }
+
+    /// Keeps the sign-in until the browser comes back; one at a time.
+    fn wait_for(
+        &self,
+        settings: AccountSettings,
+        flow: Box<dyn PendingSignIn>,
+        chosen: bool,
+    ) -> MailResult<SignIn> {
         let url = flow.url().to_string();
         let id = self.sign_in_counter.fetch_add(1, Ordering::Relaxed) + 1;
 
         let earlier = self.waiting()?.replace(WaitingSignIn {
             id,
             settings,
+            chosen,
             flow: Some(flow),
             cancelled: Arc::new(Notify::new()),
         });
@@ -487,7 +528,7 @@ impl Engine {
     /// Second half: waits until the user is done in the browser, then signs
     /// in to both servers and stores the account, like `add_account`.
     pub async fn finish_sign_in(&self, sign_in_id: u32) -> MailResult<Account> {
-        let (flow, cancelled, settings) = {
+        let (flow, cancelled, settings, chosen) = {
             let mut waiting = self.waiting()?;
             let Some(entry) = waiting.as_mut().filter(|entry| entry.id == sign_in_id) else {
                 return Err(no_sign_in("this sign-in was given up"));
@@ -496,7 +537,12 @@ impl Engine {
                 return Err(no_sign_in("this sign-in is already being finished"));
             };
 
-            (flow, Arc::clone(&entry.cancelled), entry.settings.clone())
+            (
+                flow,
+                Arc::clone(&entry.cancelled),
+                entry.settings.clone(),
+                entry.chosen,
+            )
         };
 
         let tokens = tokio::select! {
@@ -509,6 +555,19 @@ impl Engine {
             return Err(no_sign_in(
                 "the provider gave no permission that lasts beyond this hour",
             ));
+        };
+        let settings = if chosen {
+            let Some(email) = &tokens.email else {
+                return Err(no_sign_in(
+                    "the provider did not say which account was picked",
+                ));
+            };
+            let settings = self.new_settings(with_address(settings, email))?;
+            self.refuse_duplicate(&settings)?;
+
+            settings
+        } else {
+            settings
         };
 
         let account = self

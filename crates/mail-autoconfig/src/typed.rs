@@ -3,13 +3,13 @@
 //! before the user goes on. Nothing here decides anything: the finished
 //! address is detected again (`detect`), whatever this said.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::providers::PROVIDERS;
 
 /// A provider whose own mark the UI can draw.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub enum Brand {
     Gmail,

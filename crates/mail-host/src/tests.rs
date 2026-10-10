@@ -85,7 +85,7 @@ impl PendingSignIn for NeverDone {
 
 #[async_trait]
 impl SignInFlow for SilentPage {
-    async fn begin(&self, _: &str, _: &str) -> MailResult<Box<dyn PendingSignIn>> {
+    async fn begin(&self, _: &str, _: Option<&str>) -> MailResult<Box<dyn PendingSignIn>> {
         Ok(Box::new(NeverDone))
     }
 
@@ -210,6 +210,22 @@ async fn a_sign_in_is_begun_finished_and_cancelled_under_the_names_the_ui_uses()
     );
     assert_eq!(cancelled, Ok(Value::Null));
     assert_eq!(finished.unwrap_err()["kind"], "SignIn");
+}
+
+#[tokio::test]
+async fn picking_an_account_on_the_providers_page_goes_by_the_names_the_ui_uses() {
+    // Which providers are offered depends on the client ids the build was given.
+    let choices = dispatch(&engine(), "sign_in_choices", Value::Null).await;
+    assert!(choices.is_ok_and(|choices| choices.is_array()));
+
+    let unknown = dispatch(
+        &engine(),
+        "begin_chosen_sign_in",
+        json!({ "brand": "Nowhere" }),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(unknown["kind"], "Invalid");
 }
 
 #[tokio::test]

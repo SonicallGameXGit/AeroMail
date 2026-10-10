@@ -90,6 +90,9 @@ export const guessDetection: Detection = {
     pop3: null,
 }
 
+// The account the user picks on the provider's page.
+export const pickedAddress = 'picked@gmail.com'
+
 export const fakePassword = 'secret'
 export const fakeSignInUrl = 'https://accounts.example.com/sign-in'
 
@@ -336,6 +339,18 @@ export const createFakeApi = (state: FakeState = emptyState(), overrides: Partia
 
             return { id: signIns.length, url: fakeSignInUrl }
         },
+        beginChosenSignIn: async () => {
+            const settings = withAuth(gmailDetection.settings, 'OAuth2')
+            signIns.push({
+                ...settings,
+                email: pickedAddress,
+                incoming: { ...settings.incoming, username: pickedAddress },
+                outgoing: { ...settings.outgoing, username: pickedAddress },
+            })
+
+            return { id: signIns.length, url: fakeSignInUrl }
+        },
+        signInChoices: async () => [{ brand: 'Gmail', provider: 'Gmail' }],
         // The user approves in the browser at once.
         finishSignIn: async (signInId) => {
             const settings = signIns[signInId - 1]
