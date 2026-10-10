@@ -137,6 +137,31 @@ async fn a_bad_address_fails_with_the_address_error() {
 }
 
 #[tokio::test]
+async fn a_typed_address_is_recognized_under_the_names_the_ui_uses() {
+    let known = dispatch(
+        &engine(),
+        "recognize_address",
+        json!({ "email": "john@gmail.c" }),
+    )
+    .await;
+    assert_eq!(
+        known,
+        Ok(json!({ "type": "known", "brand": "Gmail", "provider": "Gmail" }))
+    );
+
+    let mistyped = dispatch(
+        &engine(),
+        "recognize_address",
+        json!({ "email": "john@gmail.ru" }),
+    )
+    .await;
+    assert_eq!(
+        mistyped,
+        Ok(json!({ "type": "mistyped", "provider": "Gmail", "suggestion": "gmail.com" }))
+    );
+}
+
+#[tokio::test]
 async fn an_engine_failure_keeps_its_kind_and_server() {
     let detection = dispatch(
         &engine(),

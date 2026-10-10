@@ -287,6 +287,20 @@ export const createFakeApi = (state: FakeState = emptyState(), overrides: Partia
 
             return { ok: true, detection: guessDetection }
         },
+        recognizeAddress: async (email) => {
+            const domain = email.slice(email.lastIndexOf('@') + 1)
+            if (!email.includes('@') || !domain.startsWith('gmail')) {
+                return { type: 'unknown' }
+            }
+            if ('gmail.com'.startsWith(domain)) {
+                return { type: 'known', brand: 'Gmail', provider: 'Gmail' }
+            }
+            if (domain.startsWith('gmail.')) {
+                return { type: 'mistyped', provider: 'Gmail', suggestion: 'gmail.com' }
+            }
+
+            return { type: 'unknown' }
+        },
         validateAccountSettings: async (settings) => {
             const issues: SettingsIssue[] = []
             if (settings.incoming.host === '') {

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { page } from 'vitest/browser'
 import { render } from 'vitest-browser-svelte'
-import type { DetectResult } from '$lib/api'
+import type { DetectResult, TypedDomain } from '$lib/api'
 import AccountSetup from './AccountSetup.svelte'
 import { createFakeApi, emptyState, fakePassword, fakeSignInUrl, gmailSignInDetection } from './fakeApi'
 
@@ -18,6 +18,75 @@ const start = (overrides: Parameters<typeof createFakeApi>[1] = {}) => {
 }
 
 describe('AccountSetup', () => {
+    describe('while the address is typed', () => {
+        const mark = () => page.getByTitle('Gmail address')
+        const warning = () => page.getByText('Gmail addresses end in gmail.com. Is yours typed right?')
+
+        it('shows Gmail\'s mark from the domain\'s name on', async () => {
+            start()
+
+            await typeAddress('john@gmai')
+            await expect.element(mark()).not.toBeInTheDocument()
+
+            await typeAddress('john@gmail')
+            await expect.element(mark()).toBeInTheDocument()
+
+            await typeAddress('john@gmail.co')
+            await expect.element(mark()).toBeInTheDocument()
+            await expect.element(warning()).not.toBeInTheDocument()
+        })
+
+        it('warns about another ending instead, and fixes it on request', async () => {
+            start()
+
+            await typeAddress('john@gmail.ru')
+            await expect.element(warning()).toBeInTheDocument()
+            await expect.element(mark()).not.toBeInTheDocument()
+
+            await page.getByRole('button', { name: 'Change it to gmail.com' }).click()
+            await expect.element(page.getByLabelText('Email address')).toHaveValue('john@gmail.com')
+            await expect.element(mark()).toBeInTheDocument()
+            await expect.element(warning()).not.toBeInTheDocument()
+        })
+
+        it('goes on with a mistyped address when the user wants to', async () => {
+            start()
+
+            await typeAddress('me@gmail.ru')
+            await page.getByRole('button', { name: 'Continue' }).click()
+
+            await expect.element(page.getByRole('heading', { name: 'We don\'t know corp.example yet' })).toBeInTheDocument()
+        })
+
+        it('ignores an answer that comes after the address changed', async () => {
+            const pending: { answer: ((answer: TypedDomain) => void) | null } = { answer: null }
+            start({
+                recognizeAddress: async (email) => {
+                    if (email.endsWith('.ru')) {
+                        return new Promise<TypedDomain>((resolve) => {
+                            pending.answer = resolve
+                        })
+                    }
+
+                    return { type: 'known', brand: 'Gmail', provider: 'Gmail' }
+                },
+            })
+
+            await typeAddress('john@gmail.ru')
+            await typeAddress('john@gmail.com')
+            await expect.element(mark()).toBeInTheDocument()
+
+            const late = pending.answer
+            if (late === null) {
+                throw new Error('the first address was never asked about')
+            }
+            late({ type: 'mistyped', provider: 'Gmail', suggestion: 'gmail.com' })
+            await new Promise((resolve) => setTimeout(resolve, 50))
+            await expect.element(warning()).not.toBeInTheDocument()
+            await expect.element(mark()).toBeInTheDocument()
+        })
+    })
+
     it('shows the found provider with a summary, without opening the manual form', async () => {
         start()
 

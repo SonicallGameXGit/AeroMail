@@ -12,7 +12,9 @@
         ServerRole,
         SettingsIssue,
         SignIn,
+        TypedDomain,
     } from '$lib/api'
+    import BrandMark from '$lib/design/BrandMark.svelte'
     import Button from '$lib/design/Button.svelte'
     import Notice from '$lib/design/Notice.svelte'
     import TextField from '$lib/design/TextField.svelte'
@@ -42,6 +44,8 @@
 
     let email = $state('')
     let addressError = $state<AddressError | null>(null)
+    // What the address typed so far says about its provider.
+    let typed = $state<TypedDomain>({ type: 'unknown' })
     let failed = $state(false)
     let busy = $state(false)
 
@@ -75,9 +79,24 @@
         action()
     }
 
+    const recognize = async (value: string) => {
+        // Only a hint: when the core cannot say, the field works the same without it.
+        const unknown: TypedDomain = { type: 'unknown' }
+        const answer = await api.recognizeAddress(value).catch(() => unknown)
+        // Answers can arrive out of order; only the one for what the field holds counts.
+        if (email === value) {
+            typed = answer
+        }
+    }
+
     const typeEmail = (value: string) => {
         email = value
         addressError = null
+        recognize(value)
+    }
+
+    const useSuggestion = (domain: string) => {
+        typeEmail(email.slice(0, email.lastIndexOf('@') + 1) + domain)
     }
 
     const typePassword = (value: string) => {
@@ -202,6 +221,12 @@
     }
 </script>
 
+{#snippet mark()}
+    {#if typed.type === 'known'}
+        <BrandMark brand={typed.brand} label={t('setup.recognized', { provider: typed.provider })} />
+    {/if}
+{/snippet}
+
 {#if detection === null || settings === null}
     <form class="stack" novalidate onsubmit={(event) => submit(event, () => lookUp(false))}>
         <div>
@@ -217,8 +242,19 @@
             value={email}
             autofocus
             invalid={addressError !== null}
+            trailing={typed.type === 'known' ? mark : undefined}
             oninput={typeEmail}
         />
+
+        {#if typed.type === 'mistyped'}
+            {@const domain = typed.suggestion}
+            <Notice kind="warning">
+                {t('setup.mistyped', { provider: typed.provider, domain })}
+                <Button variant="link" disabled={busy} onclick={() => useSuggestion(domain)}>
+                    {t('setup.useSuggestion', { domain })}
+                </Button>
+            </Notice>
+        {/if}
 
         {#if addressError !== null}
             <Notice kind="danger">{t(`address.${addressError}`)}</Notice>

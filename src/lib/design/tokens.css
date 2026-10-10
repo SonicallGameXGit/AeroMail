@@ -91,6 +91,8 @@
     --field-border: #8e9aa8;
     --field-border-top: #6f7b89;
     --field-inner-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.12);
+    /* Room kept at the end of a field that shows something inside it. */
+    --field-trailing-room: 30px;
 
     --focus-glow: 0 0 0 1px #3c9be6, 0 0 6px 1px rgba(60, 155, 230, 0.75);
 
@@ -170,6 +172,21 @@
     --avatar-border: rgba(0, 0, 0, 0.35);
     --avatar-text: #ffffff;
     --avatar-text-shadow: 0 1px 1px rgba(0, 0, 0, 0.5);
+
+    /* Brand marks: a provider's own colours as glossy materials, the same in both themes */
+    --brand-google-blue-light: #8db8ff;
+    --brand-google-blue-dark: #3577e6;
+    --brand-google-green-light: #7ed697;
+    --brand-google-green-dark: #2b9a48;
+    --brand-google-yellow-light: #ffe27a;
+    --brand-google-yellow-dark: #f4aa00;
+    --brand-google-red-light: #ff8f82;
+    --brand-google-red-dark: #e03b2c;
+    --brand-google-deep-red-light: #e8625a;
+    --brand-google-deep-red-dark: #b31d1a;
+    --brand-tile-border: rgba(0, 0, 0, 0.3);
+    --brand-tile-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+    --brand-mark-shadow: 0 0.5px 0.5px rgba(0, 0, 0, 0.35);
 }
 
 @media (prefers-color-scheme: dark) {

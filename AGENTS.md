@@ -91,7 +91,7 @@ MailClient/
     .cargo/config.toml          where the generated TypeScript bindings go
     crates/
         mail-core/              domain types and rules (incl. which sender logos are acceptable, which providers have a sign-in page, and `AppSettings`); the traits for servers, keychain, logos and sign-in; MailError
-        mail-autoconfig/        settings detection: built-in provider table, guess for unknown domains
+        mail-autoconfig/        settings detection: built-in provider table, guess for unknown domains; what a half-typed address says (provider mark, typo)
         mail-protocols/         real IMAP and SMTP behind the core traits (NetConnector); DNS + HTTPS lookup of sender logos (NetLogos); sign-in on the provider's page (NetSignIn)
         mail-store/             SQLite: accounts, folders, cached messages, settings, looked-up sender logos
         mail-render/            header parsing, HTML sanitising, attachments, composing raw messages
@@ -108,7 +108,7 @@ MailClient/
         lib/
             api/                the only place that talks to the core (`bridge.ts`: what the shell exposes)
                 generated/      TypeScript types generated from Rust - never edit by hand
-            design/             tokens.css, base.css and the primitives (Button, Icon, Avatar, Menu, Splitter, TextField, CheckField, GlassWindow, Modal, MessageBox, MessageIcon, ...)
+            design/             tokens.css, base.css and the primitives (Button, Icon, Avatar, BrandMark, Menu, Splitter, TextField, CheckField, GlassWindow, Modal, MessageBox, MessageIcon, ...)
             i18n/               `t()` and the dictionaries
             features/
                 accounts/       account setup screen, its logic, the fake Api for tests
@@ -305,7 +305,7 @@ Each must work on Windows, Linux and macOS, behind one interface (5.2):
 
 Works today (IMAP + SMTP, password sign-in):
 
-- Account setup: detection, manual form, real sign-in to both servers, password in the keychain; several accounts; a message box says the account was added (and, when it was opened, the settings close before it shows); removing an account. Gmail (and custom domains on Google's servers) signs in on Google's own page with one click, in a build given a client id (6); an app password stays one click away.
+- Account setup: detection, manual form, real sign-in to both servers, password in the keychain; while the address is typed, Gmail's mark shows inside the field, and the Gmail name with another ending (`gmail.ru`) hides it and asks whether the address is typed right, with a one-click fix; several accounts; a message box says the account was added (and, when it was opened, the settings close before it shows); removing an account. Gmail (and custom domains on Google's servers) signs in on Google's own page with one click, in a build given a client id (6); an app password stays one click away.
 - Workspace layout: account menu at the top right (switch, add, open the settings); folders of the open account on the left with New message above them; message list; reader with the actions of the open message above it, grouped as answer / put away / mark. Panes are resizable, the folder list down to an icon rail.
 - Folders with roles and unread counts; message list (newest 50, "load older"); cached for offline reading; refresh on demand and every 2 minutes for the open folder.
 - Sender pictures: a brand's own logo (BIMI) under the same glass as the initials, cached, with a switch in the settings.
@@ -395,3 +395,5 @@ Newest last. One line per decision: date, decision, reason.
 - 2026-10-09 - A modal window is never taller than the app's window; its content scrolls. Reason: the settings ran off the bottom of the screen once notifications were customised, and their last controls could not be reached.
 - 2026-10-09 - The settings window shows one category at a time, picked from a list with icons on its left (vertical tabs: arrow keys, Home / End), instead of one long page. The window keeps one size whatever is open, a long category scrolls on its own, and the category opened last is opened again while the app runs. A new group of settings is a new entry in that list. Reason: owner found the long page hard to find one's way in. Icons `account`, `privacy` and `bell` added for it.
 - 2026-10-09 - A short announcement or question is a `MessageBox` (design primitive, laid out like a Windows 7 task dialog: a narrow window, a large glossy picture at the top left (`MessageIcon`, drawn on its own because toolbar icons are too plain at that size), one blue line that says what it is about with the explanation under it, buttons on a grey strip along the bottom; the first button has the focus, Escape gives the safe answer). Adding an account ends in one ("Account added", OK), saying whether the account is open now; when it is opened, the settings window closes first. The removal confirmation uses it too. Reason: owner's request - adding an account ended without a word.
+- 2026-10-10 - While the address is typed, the core says what its domain is so far (`recognize_address`, `TypedDomain`): a provider with a mark of its own (`Brand`, only Gmail so far), from its name on (`gmail`, `gmail.c`); a likely typo, which is the provider's name with an ending it does not use (`gmail.ru`), only for providers whose list of domains is complete and whose name nobody else uses (`closed_domains`; not Outlook or Yahoo, which have country domains, nor `mail.ru`); or nothing. A typo is a warning with a "Change it to gmail.com" button, never a block: the user can go on with the address as typed. Reason: owner's request; section 2.2 - the hint suggests, the user decides, and a failed hint leaves the field as it was.
+- 2026-10-10 - Provider marks are drawn inside the app (`design/BrandMark.svelte`): the provider's own logo in its own colours, each colour a glossy material (tokens `--brand-*`), on a small paper tile under the avatars' glass, shown at the end of the address field (`TextField`'s `trailing`). Reason: the logo stays recognisable and still looks part of the Aero theme; nothing is downloaded for it.

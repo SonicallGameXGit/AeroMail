@@ -156,6 +156,11 @@ pub async fn dispatch(engine: &Engine, command: &str, params: Value) -> Result<V
             let Email { email } = args(params)?;
             reply(mail_autoconfig::detect(&email))
         }
+        // Asked on every change of the address field, so it never fails.
+        "recognize_address" => {
+            let Email { email } = args(params)?;
+            Ok(encode(&mail_autoconfig::recognize(&email)))
+        }
         "validate_account_settings" => {
             let Settings { settings } = args(params)?;
             Ok(encode(&mail_core::account::validate(&settings)))

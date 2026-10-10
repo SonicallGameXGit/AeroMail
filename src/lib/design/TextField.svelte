@@ -1,4 +1,6 @@
 <script lang="ts">
+    import type { Snippet } from 'svelte'
+
     type Props = {
         label: string
         value: string
@@ -11,6 +13,8 @@
         multiline?: boolean
         // A longer explanation under the field.
         hint?: string
+        // Something small shown inside a one-line field, at its end.
+        trailing?: Snippet
         oninput?: (value: string) => void
     }
 
@@ -24,6 +28,7 @@
         invalid = false,
         multiline = false,
         hint,
+        trailing,
         oninput,
     }: Props = $props()
 
@@ -39,7 +44,7 @@
 </script>
 
 <label>
-    <span>{label}</span>
+    <span class="caption">{label}</span>
     {#if multiline}
         <textarea
             rows="3"
@@ -53,19 +58,25 @@
             oninput={(event) => oninput?.(event.currentTarget.value)}
         ></textarea>
     {:else}
-        <input
-            {type}
-            {inputmode}
-            {placeholder}
-            {value}
-            aria-invalid={invalid}
-            aria-describedby={hint === undefined ? undefined : id}
-            autocomplete="off"
-            autocapitalize="off"
-            spellcheck="false"
-            use:focusOnMount
-            oninput={(event) => oninput?.(event.currentTarget.value)}
-        />
+        <span class="control">
+            <input
+                {type}
+                {inputmode}
+                {placeholder}
+                {value}
+                class:roomy={trailing !== undefined}
+                aria-invalid={invalid}
+                aria-describedby={hint === undefined ? undefined : id}
+                autocomplete="off"
+                autocapitalize="off"
+                spellcheck="false"
+                use:focusOnMount
+                oninput={(event) => oninput?.(event.currentTarget.value)}
+            />
+            {#if trailing !== undefined}
+                <span class="trailing">{@render trailing()}</span>
+            {/if}
+        </span>
     {/if}
     {#if hint !== undefined}
         <small {id}>{hint}</small>
@@ -79,9 +90,23 @@
         min-width: 0;
     }
 
-    span {
+    .caption {
         font-size: var(--font-size-small);
         color: var(--text-muted);
+    }
+
+    .control {
+        position: relative;
+        display: block;
+    }
+
+    .trailing {
+        position: absolute;
+        top: 0;
+        right: var(--space-1);
+        bottom: 0;
+        display: flex;
+        align-items: center;
     }
 
     input,
@@ -95,6 +120,10 @@
         background: var(--field-background);
         box-shadow: var(--field-inner-shadow);
         transition: box-shadow var(--motion-fast);
+    }
+
+    .roomy {
+        padding-right: var(--field-trailing-room);
     }
 
     textarea {

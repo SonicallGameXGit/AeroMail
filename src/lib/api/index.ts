@@ -24,6 +24,7 @@ import type { ReplyMode } from './generated/ReplyMode'
 import type { Security } from './generated/Security'
 import type { SettingsIssue } from './generated/SettingsIssue'
 import type { SignIn } from './generated/SignIn'
+import type { TypedDomain } from './generated/TypedDomain'
 
 export type { Account } from './generated/Account'
 export type { AccountSettings } from './generated/AccountSettings'
@@ -31,6 +32,7 @@ export type { AddressError } from './generated/AddressError'
 export type { AppSettings } from './generated/AppSettings'
 export type { Attachment } from './generated/Attachment'
 export type { AuthMethod } from './generated/AuthMethod'
+export type { Brand } from './generated/Brand'
 export type { Contact } from './generated/Contact'
 export type { Detection } from './generated/Detection'
 export type { DetectionSource } from './generated/DetectionSource'
@@ -58,6 +60,7 @@ export type { ServerRole } from './generated/ServerRole'
 export type { ServerSettings } from './generated/ServerSettings'
 export type { SettingsIssue } from './generated/SettingsIssue'
 export type { SignIn } from './generated/SignIn'
+export type { TypedDomain } from './generated/TypedDomain'
 
 export type DetectResult =
     | { ok: true, detection: Detection }
@@ -67,6 +70,8 @@ export type DetectResult =
 // whatever was caught back into one.
 export type Api = {
     detectAccountSettings: (email: string) => Promise<DetectResult>
+    // What the address typed so far says about its provider; asked on every change.
+    recognizeAddress: (email: string) => Promise<TypedDomain>
     validateAccountSettings: (settings: AccountSettings) => Promise<SettingsIssue[]>
     defaultPort: (protocol: Protocol, security: Security) => Promise<number>
 
@@ -287,6 +292,7 @@ export const desktopApi: Api = {
             throw error
         }
     },
+    recognizeAddress: (email) => call<TypedDomain>('recognize_address', { email }),
     validateAccountSettings: (settings) => call<SettingsIssue[]>('validate_account_settings', { settings }),
     defaultPort: (protocol, security) => call<number>('default_port', { protocol, security }),
 

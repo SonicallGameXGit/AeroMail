@@ -6,6 +6,7 @@
 //! such, so the user lands in the manual form with something to start from.
 
 mod providers;
+mod typed;
 
 use mail_core::account::{AccountSettings, AuthMethod, Protocol, Security, ServerSettings};
 use mail_core::address::{AddressError, EmailAddress};
@@ -13,6 +14,7 @@ use serde::Serialize;
 use ts_rs::TS;
 
 use providers::{Endpoint, Provider};
+pub use typed::{Brand, TypedDomain, recognize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
 #[ts(export)]

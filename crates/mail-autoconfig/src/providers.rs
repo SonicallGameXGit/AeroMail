@@ -5,7 +5,7 @@
 
 use mail_core::account::{AuthMethod, Security};
 
-use crate::PasswordKind;
+use crate::{Brand, PasswordKind};
 
 pub(crate) struct Endpoint {
     pub host: &'static str,
@@ -25,6 +25,14 @@ pub(crate) struct Provider {
     /// manual way in, and the only one in a build that cannot sign in there.
     pub accepts_password: bool,
     pub password_kind: PasswordKind,
+    /// The provider's own mark, shown while its address is being typed.
+    pub brand: Option<Brand>,
+    /// Whether `domains` is every domain the provider gives out, and no other
+    /// domain starts with the same name. The name with another ending (Gmail
+    /// has no `gmail.ru`) is then almost surely a typo. Not true where a
+    /// provider has country domains of its own (`outlook.de`, `yahoo.fr`), or
+    /// a name others use too (`mail.example.com`).
+    pub closed_domains: bool,
 }
 
 const fn tls(host: &'static str, port: u16) -> Endpoint {
@@ -53,6 +61,8 @@ pub(crate) const PROVIDERS: &[Provider] = &[
         auth: AuthMethod::OAuth2,
         accepts_password: true,
         password_kind: PasswordKind::AppPassword,
+        brand: Some(Brand::Gmail),
+        closed_domains: true,
     },
     Provider {
         name: "Outlook",
@@ -63,6 +73,8 @@ pub(crate) const PROVIDERS: &[Provider] = &[
         auth: AuthMethod::OAuth2,
         accepts_password: false,
         password_kind: PasswordKind::AppPassword,
+        brand: None,
+        closed_domains: false,
     },
     Provider {
         name: "Yahoo Mail",
@@ -73,6 +85,8 @@ pub(crate) const PROVIDERS: &[Provider] = &[
         auth: AuthMethod::Password,
         accepts_password: true,
         password_kind: PasswordKind::AppPassword,
+        brand: None,
+        closed_domains: false,
     },
     Provider {
         name: "iCloud Mail",
@@ -83,6 +97,8 @@ pub(crate) const PROVIDERS: &[Provider] = &[
         auth: AuthMethod::Password,
         accepts_password: true,
         password_kind: PasswordKind::AppPassword,
+        brand: None,
+        closed_domains: false,
     },
     Provider {
         name: "Fastmail",
@@ -93,6 +109,8 @@ pub(crate) const PROVIDERS: &[Provider] = &[
         auth: AuthMethod::Password,
         accepts_password: true,
         password_kind: PasswordKind::AppPassword,
+        brand: None,
+        closed_domains: false,
     },
     Provider {
         name: "AOL Mail",
@@ -103,6 +121,8 @@ pub(crate) const PROVIDERS: &[Provider] = &[
         auth: AuthMethod::Password,
         accepts_password: true,
         password_kind: PasswordKind::AppPassword,
+        brand: None,
+        closed_domains: false,
     },
     Provider {
         name: "GMX",
@@ -113,6 +133,8 @@ pub(crate) const PROVIDERS: &[Provider] = &[
         auth: AuthMethod::Password,
         accepts_password: true,
         password_kind: PasswordKind::Account,
+        brand: None,
+        closed_domains: false,
     },
     Provider {
         name: "GMX",
@@ -123,6 +145,8 @@ pub(crate) const PROVIDERS: &[Provider] = &[
         auth: AuthMethod::Password,
         accepts_password: true,
         password_kind: PasswordKind::Account,
+        brand: None,
+        closed_domains: false,
     },
     Provider {
         name: "Yandex Mail",
@@ -133,6 +157,8 @@ pub(crate) const PROVIDERS: &[Provider] = &[
         auth: AuthMethod::Password,
         accepts_password: true,
         password_kind: PasswordKind::AppPassword,
+        brand: None,
+        closed_domains: false,
     },
     Provider {
         name: "Mail.ru",
@@ -143,6 +169,8 @@ pub(crate) const PROVIDERS: &[Provider] = &[
         auth: AuthMethod::Password,
         accepts_password: true,
         password_kind: PasswordKind::AppPassword,
+        brand: None,
+        closed_domains: false,
     },
     Provider {
         name: "Zoho Mail",
@@ -153,6 +181,8 @@ pub(crate) const PROVIDERS: &[Provider] = &[
         auth: AuthMethod::Password,
         accepts_password: true,
         password_kind: PasswordKind::Account,
+        brand: None,
+        closed_domains: false,
     },
 ];
 
