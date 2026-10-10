@@ -31,7 +31,9 @@
 
     const focusOnMount = (node: HTMLInputElement | HTMLTextAreaElement) => {
         if (autofocus) {
-            node.focus()
+            // After the frame: a menu that opened this window hands the focus
+            // back to its button when it closes, which would undo ours.
+            requestAnimationFrame(() => node.focus())
         }
     }
 </script>

@@ -28,6 +28,13 @@
         label: account.settings.email,
     })))
 
+    // A reply already has its recipients: the next thing to do is writing.
+    const focusBody = (node: HTMLTextAreaElement) => {
+        if (form.to !== '') {
+            requestAnimationFrame(() => node.focus())
+        }
+    }
+
     const submit = (event: SubmitEvent) => {
         event.preventDefault()
         onsend()
@@ -76,6 +83,7 @@
         <span>{t('compose.body')}</span>
         <textarea
             value={form.body}
+            use:focusBody
             oninput={(event) => onchange({ ...form, body: event.currentTarget.value })}
         ></textarea>
     </label>

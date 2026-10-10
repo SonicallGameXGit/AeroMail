@@ -289,6 +289,7 @@
                     label={t('setup.password')}
                     type="password"
                     value={password}
+                    autofocus
                     invalid={connectError !== null && connectError.kind === 'Auth'}
                     oninput={typePassword}
                 />
