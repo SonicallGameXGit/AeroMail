@@ -129,6 +129,9 @@ pub struct Attachment {
 pub struct MessageContent {
     pub summary: MessageSummary,
     pub text: Option<String>,
+    /// `text` without the earlier messages it repeats at its end, for
+    /// showing it in a conversation; `None` when it repeats nothing.
+    pub text_without_quote: Option<String>,
     /// Already sanitised; still shown isolated from the app.
     pub html: Option<String>,
     pub attachments: Vec<Attachment>,

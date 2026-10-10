@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import type { Account, Folder, MessageSummary } from '$lib/api'
+import type { Account, Conversation, Folder, MessageSummary } from '$lib/api'
 import {
+    answerTarget,
     contactFull,
+    dayLabel,
     emptyForm,
     errorMessage,
     accountLabel,
@@ -11,6 +13,8 @@ import {
     frameDocument,
     groupFolders,
     inboxUnread,
+    isOwnMessage,
+    participantsLabel,
     pictureKey,
     isSafeLink,
     senderLabel,
@@ -235,6 +239,12 @@ describe('message frame', () => {
         expect(page).not.toContain('overflow-wrap:anywhere')
     })
 
+    it('hides what a reply quotes only when asked to', () => {
+        expect(frameDocument('<p>Hi</p>', false)).not.toContain('.gmail_quote')
+        expect(frameDocument('<p>Hi</p>', false, true)).toContain('.gmail_quote, .gmail_quote_container, blockquote')
+        expect(frameDocument('<p>Hi</p>', false, true)).toContain('{display:none!important}')
+    })
+
     it('lets only web and mail links leave the app', () => {
         expect(isSafeLink('https://example.com')).toBe(true)
         expect(isSafeLink('HTTP://example.com')).toBe(true)
@@ -242,5 +252,57 @@ describe('message frame', () => {
         expect(isSafeLink('javascript:alert(1)')).toBe(false)
         expect(isSafeLink('file:///etc/passwd')).toBe(false)
         expect(isSafeLink('/relative')).toBe(false)
+    })
+})
+
+describe('conversations', () => {
+    const me = 'John@Gmail.com'
+    const ann = { name: 'Ann Lee', email: 'ann@example.com' }
+    const john = { name: 'John', email: 'john@gmail.com' }
+
+    const conversation = (overrides: Partial<Conversation>): Conversation => {
+        return {
+            latest: message({ from: [ann] }),
+            messageIds: [1],
+            count: 1,
+            unread: 0,
+            flagged: false,
+            senders: [ann],
+            ...overrides,
+        }
+    }
+
+    it('knows the account\'s own messages whatever the case of the address', () => {
+        expect(isOwnMessage(message({ from: [john] }), me)).toBe(true)
+        expect(isOwnMessage(message({ from: [ann] }), me)).toBe(false)
+        expect(isOwnMessage(message({ from: [] }), me)).toBe(false)
+    })
+
+    it('names one sender in full and several by first name, the account as me', () => {
+        expect(participantsLabel(conversation({}), me)).toBe('Ann Lee')
+        expect(participantsLabel(conversation({ senders: [ann, john, { name: null, email: 'bob@example.com' }] }), me))
+            .toBe('Ann, me, bob')
+    })
+
+    it('answers the newest message someone else wrote', () => {
+        const thread = [
+            message({ id: 1, from: [ann] }),
+            message({ id: 2, from: [{ name: 'Bob', email: 'bob@example.com' }] }),
+            message({ id: 3, from: [john] }),
+        ]
+
+        expect(answerTarget(thread, me)?.id).toBe(2)
+        expect(answerTarget([message({ id: 7, from: [john] })], me)?.id).toBe(7)
+        expect(answerTarget([], me)).toBeNull()
+    })
+
+    it('names the days of a conversation the way people say them', () => {
+        const now = new Date(2026, 9, 11, 15, 0)
+        const at = (day: number, month = 9, year = 2026) => new Date(year, month, day, 9, 30).getTime() / 1000
+
+        expect(dayLabel(at(11), now)).toBe('Today')
+        expect(dayLabel(at(10), now)).toBe('Yesterday')
+        expect(dayLabel(at(5), now, 'en-GB')).toBe('Monday 5 October')
+        expect(dayLabel(at(5, 9, 2025), now, 'en-GB')).toBe('5 October 2025')
     })
 })

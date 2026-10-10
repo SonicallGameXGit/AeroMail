@@ -1,6 +1,6 @@
 // Presentation helpers of the workspace. No mail rules live here.
 
-import type { Account, Contact, Draft, Folder, FolderRole, MailError, MessageSummary, OutgoingMessage } from '$lib/api'
+import type { Account, Contact, Conversation, Draft, Folder, FolderRole, MailError, MessageSummary, OutgoingMessage } from '$lib/api'
 import type { IconName } from '$lib/design/icons'
 import { t } from '$lib/i18n'
 
@@ -135,6 +135,48 @@ export const senderLabel = (message: MessageSummary): string => {
     return contactLabel(first)
 }
 
+// Whether the account itself wrote the message.
+export const isOwnMessage = (message: MessageSummary, ownEmail: string): boolean => {
+    const sender = message.from[0]
+    if (sender === undefined) {
+        return false
+    }
+
+    return sender.email.toLowerCase() === ownEmail.toLowerCase()
+}
+
+// The name a person goes by in a list of several: the first word of their name.
+const shortName = (contact: Contact): string => {
+    const name = contact.name?.trim() ?? ''
+    if (name === '') {
+        const at = contact.email.indexOf('@')
+
+        return at === -1 ? contact.email : contact.email.slice(0, at)
+    }
+
+    return name.split(/\s+/)[0] ?? name
+}
+
+// Who a row of the list names: its one sender in full, or everyone who wrote
+// in the conversation, the account itself as "me".
+export const participantsLabel = (conversation: Conversation, ownEmail: string): string => {
+    if (conversation.senders.length <= 1) {
+        return senderLabel(conversation.latest)
+    }
+
+    return conversation.senders
+        .map((sender) => sender.email.toLowerCase() === ownEmail.toLowerCase() ? t('list.me') : shortName(sender))
+        .join(', ')
+}
+
+// The message a reply in a conversation answers: the newest one someone else
+// wrote, so the reply goes to them and not back to the account itself.
+export const answerTarget = (thread: MessageSummary[], ownEmail: string): MessageSummary | null => {
+    const others = thread.filter((message) => !isOwnMessage(message, ownEmail))
+
+    return others.at(-1) ?? thread.at(-1) ?? null
+}
+
 export const subjectLabel = (message: MessageSummary): string => {
     if (message.subject === '') {
         return t('list.noSubject')
@@ -158,6 +200,27 @@ export const shortDate = (unixSeconds: number, now: Date, locale?: string): stri
     }
 
     return new Intl.DateTimeFormat(locale, { day: 'numeric', month: 'short', year: 'numeric' }).format(date)
+}
+
+// What a conversation says above the first message of each day.
+export const dayLabel = (unixSeconds: number, now: Date, locale?: string): string => {
+    const date = new Date(unixSeconds * 1000)
+    if (sameDay(date, now)) {
+        return t('conversation.today')
+    }
+    const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1)
+    if (sameDay(date, yesterday)) {
+        return t('conversation.yesterday')
+    }
+    if (date.getFullYear() === now.getFullYear()) {
+        return new Intl.DateTimeFormat(locale, { weekday: 'long', day: 'numeric', month: 'long' }).format(date)
+    }
+
+    return new Intl.DateTimeFormat(locale, { day: 'numeric', month: 'long', year: 'numeric' }).format(date)
+}
+
+export const timeLabel = (unixSeconds: number, locale?: string): string => {
+    return new Intl.DateTimeFormat(locale, { hour: '2-digit', minute: '2-digit' }).format(new Date(unixSeconds * 1000))
 }
 
 export const fullDate = (unixSeconds: number, locale?: string): string => {
@@ -241,10 +304,16 @@ export const errorMessage = (error: MailError): string => {
     return `${t(`role.${error.server}`)}: ${message}`
 }
 
+// What mail apps wrap around the earlier messages a reply repeats under it:
+// Gmail, Thunderbird and Apple Mail, Outlook. In a conversation those
+// messages are already above it, so they stay hidden until asked for.
+export const quoteSelector = '.gmail_quote, .gmail_quote_container, blockquote, .moz-cite-prefix, '
+    + '#divRplyFwdMsg, #divRplyFwdMsg ~ *, #appendonsend, #appendonsend ~ *'
+
 // The document shown inside the isolated message frame. The content policy
 // is the second line of defence after sanitising in the core: nothing but
 // inline styles and images, and remote images only when allowed.
-export const frameDocument = (html: string, allowRemote: boolean): string => {
+export const frameDocument = (html: string, allowRemote: boolean, hideQuotes = false): string => {
     // Allowed remote content is all the message loads to look as it was
     // written: its images, and the fonts and font style sheets it imports.
     // Fonts embedded in the message itself are always fine.
@@ -258,6 +327,7 @@ export const frameDocument = (html: string, allowRemote: boolean): string => {
     const style = 'body{margin:12px;font-family:\'Segoe UI\',\'Noto Sans\',sans-serif;font-size:13px;'
         + 'color:#1b1f24;background:#ffffff;overflow-wrap:break-word}'
         + 'a{color:#0b5cad}blockquote{margin:0 0 0 8px;padding-left:8px;border-left:2px solid #a9b9cc}'
+        + (hideQuotes ? `${quoteSelector}{display:none!important}` : '')
 
     return '<!doctype html><html><head><meta charset="utf-8">'
         + `<meta http-equiv="Content-Security-Policy" content="${policy}">`

@@ -7,6 +7,7 @@ import type {
     Api,
     AppSettings,
     ColorScheme,
+    Conversation,
     Detection,
     Folder,
     FolderRole,
@@ -151,6 +152,11 @@ export const defaultSettings = (): AppSettings => {
             icon: 'Sender',
             customIcon: null,
         },
+        conversations: {
+            enabled: true,
+            sameSubject: true,
+            otherFolders: true,
+        },
     }
 }
 
@@ -185,6 +191,26 @@ const message = (id: number, folderId: number, subject: string, sender: string, 
         flags: { seen, flagged: false, answered: false },
         size: 1200,
     }
+}
+
+// Three messages about lunch: Ann asks, John (the account) answers from
+// Sent, Ann answers back. Added to the seeded inbox, they make one conversation.
+export const withConversation = (state: FakeState): FakeState => {
+    const reply = message(12, 2, 'Re: Lunch on Friday?', 'John', true)
+    const answer = message(13, 1, 'Re: Lunch on Friday?', 'Ann', false)
+    state.messages = [
+        answer,
+        { ...reply, from: [{ name: 'John', email: 'john@gmail.com' }] },
+        ...state.messages,
+    ]
+
+    return state
+}
+
+// What the fake groups by: the subject without "Re:" and the like. The real
+// rules are in the core.
+const baseSubject = (subject: string): string => {
+    return subject.replace(/^((re|fwd?):\s*)+/i, '').toLowerCase()
 }
 
 // One Gmail account with a few folders and two messages in the inbox.
@@ -285,6 +311,57 @@ export const createFakeApi = (state: FakeState = emptyState(), overrides: Partia
             .sort((a, b) => b.uid - a.uid)
     }
 
+    // The messages of `folderId` grouped the way the settings say, each
+    // group with what other folders add to it.
+    const gather = async (folderId: number): Promise<{ own: MessageSummary[], shown: MessageSummary[] }[]> => {
+        const own = await listMessages(folderId)
+        const grouping = state.settings.conversations
+        if (!grouping.enabled) {
+            return own.map((candidate) => ({ own: [candidate], shown: [candidate] }))
+        }
+
+        const kept = state.folders
+            .filter((candidate) => candidate.id === folderId || !['Trash', 'Junk', 'Drafts'].includes(candidate.role))
+            .filter((candidate) => grouping.otherFolders || candidate.id === folderId)
+            .map((candidate) => candidate.id)
+        const groups: { own: MessageSummary[], shown: MessageSummary[] }[] = []
+        for (const candidate of own) {
+            const key = baseSubject(candidate.subject)
+            const known = groups.find((group) => group.own[0] !== undefined && baseSubject(group.own[0].subject) === key)
+            if (known !== undefined) {
+                known.own.push(candidate)
+                continue
+            }
+            const shown = state.messages
+                .filter((other) => kept.includes(other.folderId) && baseSubject(other.subject) === key)
+            groups.push({ own: [candidate], shown })
+        }
+
+        return groups
+    }
+
+    const listConversations = async (folderId: number): Promise<Conversation[]> => {
+        return (await gather(folderId)).flatMap((group): Conversation[] => {
+            const latest = group.own[0]
+            if (latest === undefined) {
+                return []
+            }
+            const written = group.shown.toSorted((a, b) => a.date - b.date)
+            const senders = written
+                .flatMap((candidate) => candidate.from.slice(0, 1))
+                .filter((sender, index, all) => all.findIndex((other) => other.email === sender.email) === index)
+
+            return [{
+                latest,
+                messageIds: group.own.map((candidate) => candidate.id),
+                count: group.shown.length,
+                unread: group.own.filter((candidate) => !candidate.flags.seen).length,
+                flagged: group.own.some((candidate) => candidate.flags.flagged),
+                senders,
+            }]
+        })
+    }
+
     return {
         detectAccountSettings: async (email) => {
             if (!email.includes('@')) {
@@ -379,6 +456,14 @@ export const createFakeApi = (state: FakeState = emptyState(), overrides: Partia
         refreshFolders: listFolders,
 
         listMessages,
+        listConversations,
+        conversation: async (messageId) => {
+            const opened = find(state, messageId)
+            const group = (await gather(opened.folderId))
+                .find((candidate) => candidate.own.some((own) => own.id === messageId))
+
+            return (group?.shown ?? [opened]).toSorted((a, b) => a.date - b.date)
+        },
         syncFolder: listMessages,
         openMessage: async (messageId, allowRemote): Promise<MessageContent> => {
             const summary = find(state, messageId)
@@ -387,7 +472,8 @@ export const createFakeApi = (state: FakeState = emptyState(), overrides: Partia
 
             return {
                 summary,
-                text: `Body of ${summary.subject}`,
+                text: `Body of ${summary.subject}\n\nOn Monday someone wrote:\n> Earlier text`,
+                textWithoutQuote: `Body of ${summary.subject}`,
                 html: remote ? '<p>Offers</p>' : htmlBodies[messageId] ?? null,
                 attachments: [],
                 remoteContentBlocked: blocked,
@@ -438,6 +524,14 @@ export const createFakeApi = (state: FakeState = emptyState(), overrides: Partia
                 throw fail('Invalid', 'the message has no recipients')
             }
             state.sent = [...state.sent, outgoing]
+            // Like the core, a copy is kept in Sent.
+            const sentFolder = state.folders.find((candidate) => candidate.accountId === outgoing.accountId && candidate.role === 'Sent')
+            const account = state.accounts.find((candidate) => candidate.id === outgoing.accountId)
+            if (sentFolder !== undefined && account !== undefined) {
+                const id = Math.max(0, ...state.messages.map((candidate) => candidate.id)) + 1
+                const copy = message(id, sentFolder.id, outgoing.subject, 'Me', true)
+                state.messages = [{ ...copy, from: [{ name: null, email: account.settings.email }] }, ...state.messages]
+            }
         },
 
         saveAttachment: async () => true,

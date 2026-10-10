@@ -6,4 +6,4 @@ mod html;
 mod parse;
 
 pub use compose::{ComposeInput, compose};
-pub use parse::{HeaderInfo, Rendered, attachment, parse_header, preview, render};
+pub use parse::{HeaderInfo, Rendered, attachment, parse_header, preview, render, without_quote};

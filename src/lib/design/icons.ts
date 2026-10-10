@@ -10,6 +10,7 @@ export type IconName =
     | 'chevron'
     | 'close'
     | 'compose'
+    | 'conversation'
     | 'download'
     | 'drafts'
     | 'flag'

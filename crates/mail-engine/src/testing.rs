@@ -105,6 +105,15 @@ impl Remote {
 
     /// Delivers a message and returns its UID.
     pub fn deliver(&mut self, path: &str, subject: &str, seen: bool) -> u32 {
+        self.deliver_raw(
+            path,
+            raw_message(subject, &format!("Body of {subject}")),
+            seen,
+        )
+    }
+
+    /// Delivers a message written in full and returns its UID.
+    pub fn deliver_raw(&mut self, path: &str, raw: Vec<u8>, seen: bool) -> u32 {
         let folder = self.folder(path);
         let uid = folder.next_uid;
         folder.next_uid += 1;
@@ -114,7 +123,7 @@ impl Remote {
                 seen,
                 ..MessageFlags::default()
             },
-            raw: raw_message(subject, &format!("Body of {subject}")),
+            raw,
         });
 
         uid

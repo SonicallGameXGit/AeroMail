@@ -17,6 +17,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use mail_core::account::{AccountSettings, AuthMethod, ServerRole, validate};
 use mail_core::address::EmailAddress;
+use mail_core::conversation::{Conversation, Thread, group};
 use mail_core::draft::{Draft, ReplyMode, reply_draft};
 use mail_core::error::{ErrorKind, MailError, MailResult};
 use mail_core::logo::{is_logo, sender_domain};
@@ -30,8 +31,8 @@ use mail_core::transport::{
     Connector, Envelope, Flag, FolderState, IncomingSession, LogoSource, PendingSignIn,
     RemoteFolder, RemoteMessage, SecretStore, SignInFlow,
 };
-use mail_render::{ComposeInput, compose, parse_header, render};
-use mail_store::{NewMessage, Store};
+use mail_render::{ComposeInput, compose, parse_header, render, without_quote};
+use mail_store::{NewMessage, Store, Threaded};
 use tokio::sync::{Mutex as AsyncMutex, Notify, OwnedMutexGuard, broadcast};
 use tokio::task::JoinHandle;
 
@@ -228,7 +229,67 @@ fn to_new_message(remote: &RemoteMessage) -> NewMessage {
         date: header.date.unwrap_or(remote.received),
         flags: remote.flags,
         size: remote.size,
+        message_id: header.message_id,
+        parents: header.parents,
     }
+}
+
+/// A conversation as the engine finds it in the cache.
+struct Gathered {
+    /// Its messages in the folder it is listed in, newest first.
+    own: Vec<MessageSummary>,
+    /// Every message of it the app has, each once, in no particular order.
+    shown: Vec<MessageSummary>,
+}
+
+/// Folders a conversation may show messages from besides the one it is
+/// listed in: not the ones the user threw away, nor unsent drafts.
+fn keeps_conversations(folder: &Folder) -> bool {
+    folder.selectable
+        && !matches!(
+            folder.role,
+            FolderRole::Trash | FolderRole::Junk | FolderRole::Drafts
+        )
+}
+
+/// Oldest first, as a conversation is read. Two messages of the same
+/// second keep the order they were cached in.
+fn by_date(messages: &mut [MessageSummary]) {
+    messages.sort_by_key(|message| (message.date, message.id));
+}
+
+/// The row of the message list for a gathered conversation.
+fn list_row(gathered: Gathered) -> Option<Conversation> {
+    let latest = gathered.own.first()?.clone();
+    let count = |value: usize| u32::try_from(value).unwrap_or(u32::MAX);
+
+    let mut written = gathered.shown;
+    by_date(&mut written);
+    let mut senders: Vec<Contact> = Vec::new();
+    for message in &written {
+        if let Some(sender) = message.from.first()
+            && !senders
+                .iter()
+                .any(|known| known.email.eq_ignore_ascii_case(&sender.email))
+        {
+            senders.push(sender.clone());
+        }
+    }
+
+    Some(Conversation {
+        message_ids: gathered.own.iter().map(|message| message.id).collect(),
+        count: count(written.len()),
+        unread: count(
+            gathered
+                .own
+                .iter()
+                .filter(|message| !message.flags.seen)
+                .count(),
+        ),
+        flagged: gathered.own.iter().any(|message| message.flags.flagged),
+        senders,
+        latest,
+    })
 }
 
 impl Engine {
@@ -627,6 +688,108 @@ impl Engine {
         self.db(|store| store.messages(folder_id))
     }
 
+    /// The conversations that have messages in `folder`, from the cache, the
+    /// way the settings group them. Duplicates of one message (Gmail keeps
+    /// every message in "All mail" as well) count once.
+    fn gather(&self, folder: &Folder) -> MailResult<Vec<Gathered>> {
+        let settings = self.settings()?.conversations;
+        let own = self.db(|store| store.threaded(folder.id))?;
+        if !settings.enabled {
+            return Ok(own
+                .into_iter()
+                .map(|message| Gathered {
+                    own: vec![message.summary.clone()],
+                    shown: vec![message.summary],
+                })
+                .collect());
+        }
+
+        let own_count = own.len();
+        let mut all: Vec<Threaded> = own;
+        if settings.other_folders {
+            for other in self.list_folders(folder.account_id)? {
+                if other.id != folder.id && keeps_conversations(&other) {
+                    all.extend(self.db(|store| store.threaded(other.id))?);
+                }
+            }
+        }
+
+        let threads: Vec<Thread<'_>> = all
+            .iter()
+            .map(|message| Thread {
+                message_id: message.message_id.as_deref(),
+                parents: &message.parents,
+                subject: &message.summary.subject,
+                sender: message
+                    .summary
+                    .from
+                    .first()
+                    .map(|sender| sender.email.as_str()),
+            })
+            .collect();
+        let groups = group(&threads, settings.same_subject);
+
+        // A group is in ascending order and the folder's own messages come
+        // first, so a group with none of them starts past them.
+        let mut gathered = Vec::new();
+        for positions in groups.iter().filter(|positions| positions[0] < own_count) {
+            let mut own = Vec::new();
+            let mut shown: Vec<&Threaded> = Vec::new();
+            for &position in positions {
+                let message = &all[position];
+                if position < own_count {
+                    own.push(message.summary.clone());
+                }
+                let copy = message.message_id.as_ref().is_some_and(|id| {
+                    shown
+                        .iter()
+                        .any(|kept| kept.message_id.as_ref() == Some(id))
+                });
+                if !copy {
+                    shown.push(message);
+                }
+            }
+            gathered.push(Gathered {
+                own,
+                shown: shown
+                    .into_iter()
+                    .map(|message| message.summary.clone())
+                    .collect(),
+            });
+        }
+
+        Ok(gathered)
+    }
+
+    /// The rows of a folder's message list, newest first, from the cache.
+    /// With conversations turned off every message is a row of its own.
+    pub fn list_conversations(&self, folder_id: i64) -> MailResult<Vec<Conversation>> {
+        let folder = self.db(|store| store.folder(folder_id))?;
+
+        Ok(self
+            .gather(&folder)?
+            .into_iter()
+            .filter_map(list_row)
+            .collect())
+    }
+
+    /// Every message of the conversation `message_id` belongs to, as it is
+    /// listed in its folder, oldest first: other folders included when the
+    /// settings say so. Just the message when it stands alone.
+    pub fn conversation(&self, message_id: i64) -> MailResult<Vec<MessageSummary>> {
+        let message = self.db(|store| store.message(message_id))?;
+        let folder = self.db(|store| store.folder(message.folder_id))?;
+
+        let mut shown = self
+            .gather(&folder)?
+            .into_iter()
+            .find(|gathered| gathered.own.iter().any(|own| own.id == message_id))
+            .map_or_else(|| vec![message], |gathered| gathered.shown);
+        by_date(&mut shown);
+
+        Ok(shown)
+    }
+
     /// One writer of a folder's cached messages at a time, so two of them
     /// never both take a message for news.
     fn folder_lock(&self, folder_id: i64) -> MailResult<Arc<AsyncMutex<()>>> {
@@ -668,16 +831,20 @@ impl Engine {
             .copied()
             .filter(|uid| cached.binary_search(uid).is_err())
             .collect();
-        let known: Vec<u32> = wanted
+        // Cached before reply headers were kept: their headers are fetched
+        // again, which also brings their flags.
+        let unthreaded = self.db(|store| store.unthreaded_uids(folder_id))?;
+        let (refill, known): (Vec<u32>, Vec<u32>) = wanted
             .iter()
             .copied()
             .filter(|uid| cached.binary_search(uid).is_ok())
-            .collect();
+            .partition(|uid| unthreaded.binary_search(uid).is_ok());
+        let fetched: Vec<u32> = new.iter().chain(refill.iter()).copied().collect();
 
-        let headers = if new.is_empty() {
+        let headers = if fetched.is_empty() {
             Vec::new()
         } else {
-            session.fetch_headers(&folder.path, &new).await?
+            session.fetch_headers(&folder.path, &fetched).await?
         };
         let flags = if known.is_empty() {
             Vec::new()
@@ -712,7 +879,11 @@ impl Engine {
             .await?;
         drop(session);
 
-        if !new.is_empty() || !gone.is_empty() || state.unread != folder.unread {
+        if !new.is_empty()
+            || !gone.is_empty()
+            || !refill.is_empty()
+            || state.unread != folder.unread
+        {
             self.announce(MailEvent::FolderChanged {
                 account_id: account.id,
                 folder_id,
@@ -913,12 +1084,33 @@ impl Engine {
 
         self.sync_folder(inbox.id, false).await?;
         *failures = 0;
+        self.sync_sent(&account).await;
         loop {
             waiting.wait_for_change(&inbox.path, WATCH_LIMIT).await?;
             self.take_arrivals(&account, &inbox, waiting.as_mut())
                 .await?;
             // What else changed (read elsewhere, deleted, moved), the usual way.
             self.sync_folder(inbox.id, false).await?;
+        }
+    }
+
+    /// Brings Sent up to date while conversations show the user's own
+    /// replies from it, so a conversation shows both sides. Only an extra:
+    /// when it fails, the conversations stay as they were.
+    async fn sync_sent(&self, account: &Account) {
+        let wanted = self.settings().is_ok_and(|settings| {
+            settings.conversations.enabled && settings.conversations.other_folders
+        });
+        if !wanted {
+            return;
+        }
+        let sent = self.list_folders(account.id).ok().and_then(|folders| {
+            folders
+                .into_iter()
+                .find(|folder| folder.role == FolderRole::Sent && folder.selectable)
+        });
+        if let Some(sent) = sent {
+            let _ = self.sync_folder(sent.id, false).await;
         }
     }
 
@@ -956,6 +1148,7 @@ impl Engine {
 
         Ok(MessageContent {
             summary,
+            text_without_quote: rendered.text.as_deref().and_then(without_quote),
             text: rendered.text,
             html: rendered.html,
             attachments: rendered.attachments,
@@ -1186,6 +1379,8 @@ impl Engine {
         {
             let _ = session.append(&sent.path, &raw, true).await;
         }
+        // The reply shows in its conversation at once.
+        self.sync_sent(&account).await;
 
         Ok(())
     }

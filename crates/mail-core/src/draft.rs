@@ -177,6 +177,7 @@ mod tests {
                 size: 0,
             },
             text: Some("Hi,\n\nNoon?\n".to_string()),
+            text_without_quote: None,
             html: None,
             attachments: Vec::new(),
             remote_content_blocked: false,

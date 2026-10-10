@@ -17,6 +17,10 @@ pub struct HeaderInfo {
     pub cc: Vec<Contact>,
     /// Unix seconds from the Date header, when present and readable.
     pub date: Option<i64>,
+    pub message_id: Option<String>,
+    /// The messages this one answers: `In-Reply-To`, then `References`,
+    /// each id once.
+    pub parents: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -76,8 +80,20 @@ pub fn parse_header(raw: &[u8]) -> HeaderInfo {
             to: Vec::new(),
             cc: Vec::new(),
             date: None,
+            message_id: None,
+            parents: Vec::new(),
         };
     };
+
+    let mut parents: Vec<String> = Vec::new();
+    for id in id_list(message.in_reply_to())
+        .into_iter()
+        .chain(id_list(message.references()))
+    {
+        if !parents.contains(&id) {
+            parents.push(id);
+        }
+    }
 
     HeaderInfo {
         subject: message.subject().unwrap_or_default().trim().to_string(),
@@ -85,6 +101,8 @@ pub fn parse_header(raw: &[u8]) -> HeaderInfo {
         to: contacts(message.to()),
         cc: contacts(message.cc()),
         date: message.date().map(|date| date.to_timestamp()),
+        message_id: message.message_id().map(str::to_string),
+        parents,
     }
 }
 
@@ -219,6 +237,73 @@ pub fn preview(raw: &[u8]) -> Option<String> {
     Some(preview).filter(|preview| !preview.is_empty())
 }
 
+/// Whether a line introduces the quote under it: "On Monday, Ann wrote:".
+/// Any line ending in a colon counts, because the wording differs between
+/// every mail app and language.
+fn is_attribution(line: &str) -> bool {
+    line.trim_end().ends_with(':')
+}
+
+/// Whether the line at `index` starts an earlier message pasted under the
+/// reply by apps that do not quote with `>` (Outlook): their marker line, or
+/// a rule of underscores with the earlier message's "From:" right under it.
+fn starts_pasted_message(lines: &[&str], index: usize) -> bool {
+    let line = lines[index].trim();
+    if line.eq_ignore_ascii_case("-----Original Message-----") {
+        return true;
+    }
+    let rule = line.len() >= 10 && line.chars().all(|character| character == '_');
+    let next = lines[index + 1..]
+        .iter()
+        .find(|next| !next.trim().is_empty());
+
+    rule && next.is_some_and(|next| next.trim_start().starts_with("From:"))
+}
+
+/// The text without the earlier messages it repeats at its end: the quoted
+/// lines (`>`), the line that introduces them, and an earlier message pasted
+/// in by apps that do not quote. `None` when nothing is repeated, or when
+/// nothing would be left. A quote with the reply written under or between
+/// it is not at the end, so that text stays whole.
+pub fn without_quote(text: &str) -> Option<String> {
+    let lines: Vec<&str> = text.lines().collect();
+    let pasted = (0..lines.len()).find(|index| starts_pasted_message(&lines, *index));
+
+    // From the end, past blank and quoted lines.
+    let mut start = lines.len();
+    while start > 0 {
+        let line = lines[start - 1].trim_start();
+        if !line.is_empty() && !line.starts_with('>') {
+            break;
+        }
+        start -= 1;
+    }
+    let quoted = lines[start..]
+        .iter()
+        .any(|line| line.trim_start().starts_with('>'));
+    if quoted {
+        while start > 0 && lines[start - 1].trim().is_empty() {
+            start -= 1;
+        }
+        if start > 0 && is_attribution(lines[start - 1]) {
+            start -= 1;
+        }
+    } else {
+        start = lines.len();
+    }
+    let cut = match pasted {
+        Some(pasted) => start.min(pasted),
+        None => start,
+    };
+    if cut == lines.len() {
+        return None;
+    }
+
+    let kept = lines[..cut].join("\n").trim_end().to_string();
+
+    Some(kept).filter(|kept| !kept.trim().is_empty())
+}
+
 /// The attachment at `index` with its bytes.
 pub fn attachment(raw: &[u8], index: u32) -> MailResult<(Attachment, Vec<u8>)> {
     let message = MessageParser::default().parse(raw).ok_or_else(unreadable)?;
@@ -288,6 +373,45 @@ JVBERi0xLjQ=\r\n\
         assert_eq!(header.to[1].email, "bob@example.com");
         assert_eq!(header.cc[0].email, "carol@example.com");
         assert_eq!(header.date, Some(1_700_000_000));
+        assert_eq!(header.message_id.as_deref(), Some("m2@example.com"));
+        assert_eq!(header.parents, vec!["m0@example.com", "m1@example.com"]);
+    }
+
+    #[test]
+    fn the_answered_message_comes_first_and_each_id_once() {
+        let header = parse_header(
+            b"Subject: Re: Plan\r\nIn-Reply-To: <b@x>\r\nReferences: <a@x> <b@x>\r\n\r\n",
+        );
+
+        assert_eq!(header.message_id, None);
+        assert_eq!(header.parents, vec!["b@x", "a@x"]);
+    }
+
+    #[test]
+    fn a_reply_without_its_quote_is_what_was_written() {
+        let reply = "Sounds good.\nSee you.\n\nOn Mon, 5 Oct 2026, Ann <ann@x> wrote:\n> Lunch?\n>\n> Ann\n";
+        assert_eq!(
+            without_quote(reply).as_deref(),
+            Some("Sounds good.\nSee you.")
+        );
+
+        let outlook =
+            "Yes.\n\n________________________________\nFrom: Ann\nSent: Monday\n\nLunch?\n";
+        assert_eq!(without_quote(outlook).as_deref(), Some("Yes."));
+
+        let original = "Hi,\n\n-----Original Message-----\nFrom: Ann\n";
+        assert_eq!(without_quote(original).as_deref(), Some("Hi,"));
+    }
+
+    #[test]
+    fn text_that_repeats_nothing_at_its_end_is_left_whole() {
+        assert_eq!(without_quote("Just text.\nNothing quoted:\n"), None);
+
+        let interleaved = "> Lunch?\nYes!\n> Where?\nThe usual place.\n";
+        assert_eq!(without_quote(interleaved), None);
+
+        assert_eq!(without_quote("Ann wrote:\n> only a quote\n"), None);
+        assert_eq!(without_quote(""), None);
     }
 
     #[test]

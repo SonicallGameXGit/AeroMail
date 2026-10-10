@@ -1,5 +1,5 @@
 <script lang="ts" module>
-    export type Category = 'accounts' | 'appearance' | 'privacy' | 'notifications'
+    export type Category = 'accounts' | 'appearance' | 'conversations' | 'privacy' | 'notifications'
 
     // The category opened last stays open the next time, while the app runs.
     let lastCategory: Category = 'accounts'
@@ -33,6 +33,7 @@
     const categories: { id: Category, icon: IconName }[] = [
         { id: 'accounts', icon: 'account' },
         { id: 'appearance', icon: 'appearance' },
+        { id: 'conversations', icon: 'conversation' },
         { id: 'privacy', icon: 'privacy' },
         { id: 'notifications', icon: 'bell' },
     ]
@@ -124,6 +125,31 @@
             />
         {:else if category === 'appearance'}
             <ThemePicker theme={settings.theme} onchange={(theme) => onchange({ ...settings, theme })} />
+        {:else if category === 'conversations'}
+            {@const grouping = settings.conversations}
+            <CheckField
+                label={t('settings.conversationsOn')}
+                hint={t('settings.conversationsOnHint')}
+                checked={grouping.enabled}
+                onchange={(enabled) => onchange({ ...settings, conversations: { ...grouping, enabled } })}
+            />
+            <!-- What is grouped, only while grouping is on. -->
+            {#if grouping.enabled}
+                <div class="nested">
+                    <CheckField
+                        label={t('settings.conversationsSameSubject')}
+                        hint={t('settings.conversationsSameSubjectHint')}
+                        checked={grouping.sameSubject}
+                        onchange={(sameSubject) => onchange({ ...settings, conversations: { ...grouping, sameSubject } })}
+                    />
+                    <CheckField
+                        label={t('settings.conversationsOtherFolders')}
+                        hint={t('settings.conversationsOtherFoldersHint')}
+                        checked={grouping.otherFolders}
+                        onchange={(otherFolders) => onchange({ ...settings, conversations: { ...grouping, otherFolders } })}
+                    />
+                </div>
+            {/if}
         {:else if category === 'privacy'}
             <CheckField
                 label={t('settings.pictures')}
@@ -262,6 +288,12 @@
 
     .row {
         display: flex;
+    }
+
+    .nested {
+        display: grid;
+        gap: var(--space-3);
+        padding-left: var(--space-5);
     }
 
     .footer {

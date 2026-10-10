@@ -10,6 +10,7 @@ import type { AddressPreset } from './generated/AddressPreset'
 import type { AppSettings } from './generated/AppSettings'
 import type { Attachment } from './generated/Attachment'
 import type { Brand } from './generated/Brand'
+import type { Conversation } from './generated/Conversation'
 import type { Detection } from './generated/Detection'
 import type { Draft } from './generated/Draft'
 import type { ErrorKind } from './generated/ErrorKind'
@@ -39,6 +40,8 @@ export type { Attachment } from './generated/Attachment'
 export type { AuthMethod } from './generated/AuthMethod'
 export type { Brand } from './generated/Brand'
 export type { Contact } from './generated/Contact'
+export type { Conversation } from './generated/Conversation'
+export type { ConversationSettings } from './generated/ConversationSettings'
 export type { Detection } from './generated/Detection'
 export type { DetectionSource } from './generated/DetectionSource'
 export type { Draft } from './generated/Draft'
@@ -103,6 +106,11 @@ export type Api = {
     refreshFolders: (accountId: number) => Promise<Folder[]>
 
     listMessages: (folderId: number) => Promise<MessageSummary[]>
+    // The rows of a folder's list, from the cache: conversations, or single
+    // messages when the settings turn them off.
+    listConversations: (folderId: number) => Promise<Conversation[]>
+    // Every message of the conversation a message belongs to, oldest first.
+    conversation: (messageId: number) => Promise<MessageSummary[]>
     syncFolder: (folderId: number, grow: boolean) => Promise<MessageSummary[]>
     openMessage: (messageId: number, allowRemote: boolean) => Promise<MessageContent>
     setSeen: (messageIds: number[], seen: boolean) => Promise<void>
@@ -328,6 +336,8 @@ export const desktopApi: Api = {
     refreshFolders: (accountId) => call<Folder[]>('refresh_folders', { accountId }),
 
     listMessages: (folderId) => call<MessageSummary[]>('list_messages', { folderId }),
+    listConversations: (folderId) => call<Conversation[]>('list_conversations', { folderId }),
+    conversation: (messageId) => call<MessageSummary[]>('conversation', { messageId }),
     syncFolder: (folderId, grow) => call<MessageSummary[]>('sync_folder', { folderId, grow }),
     openMessage: (messageId, allowRemote) => call<MessageContent>('open_message', { messageId, allowRemote }),
     setSeen: (messageIds, seen) => call<void>('set_seen', { messageIds, seen }),

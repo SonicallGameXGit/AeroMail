@@ -6,7 +6,8 @@
     import Icon from '$lib/design/Icon.svelte'
     import Notice from '$lib/design/Notice.svelte'
     import { t } from '$lib/i18n'
-    import { contactFull, contactLabel, frameDocument, fullDate, isSafeLink, sizeLabel, subjectLabel } from './workspace'
+    import { catchLinks } from './frame'
+    import { contactFull, contactLabel, frameDocument, fullDate, sizeLabel, subjectLabel } from './workspace'
 
     type Props = {
         content: MessageContent | null
@@ -24,35 +25,12 @@
 
     let { content, busy, remoteAllowed, picture, toolbar, onshowremote, onsave, onlink }: Props = $props()
 
-    // The frame cannot run scripts, so links are caught from the outside and
+    // The frame cannot run scripts: links are caught from the outside and
     // handed to the system browser instead of navigating inside the app.
-    const catchLinks = (event: Event) => {
-        const frame = event.currentTarget
-        if (!(frame instanceof HTMLIFrameElement) || frame.contentDocument === null) {
-            return
+    const opened = (event: Event) => {
+        if (event.currentTarget instanceof HTMLIFrameElement) {
+            catchLinks(event.currentTarget, onlink)
         }
-        // Elements inside the frame belong to the frame's own window, so they
-        // must be checked against its classes, not the app's.
-        const view = frame.contentDocument.defaultView
-        if (view === null) {
-            return
-        }
-
-        frame.contentDocument.addEventListener('click', (click) => {
-            if (!(click.target instanceof view.Element)) {
-                return
-            }
-            const link = click.target.closest('a')
-            if (link === null) {
-                return
-            }
-
-            click.preventDefault()
-            const url = link.getAttribute('href')
-            if (url !== null && isSafeLink(url)) {
-                onlink(url)
-            }
-        })
     }
 </script>
 
@@ -134,7 +112,7 @@
                 title={t('reader.content')}
                 sandbox="allow-same-origin"
                 srcdoc={frameDocument(content.html, remoteAllowed)}
-                onload={catchLinks}
+                onload={opened}
             ></iframe>
         {:else if content.text !== null && content.text.trim() !== ''}
             <pre>{content.text}</pre>

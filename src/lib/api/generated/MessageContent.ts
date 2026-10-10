@@ -5,6 +5,11 @@ import type { MessageSummary } from "./MessageSummary";
 
 export type MessageContent = { summary: MessageSummary, text: string | null, 
 /**
+ * `text` without the earlier messages it repeats at its end, for
+ * showing it in a conversation; `None` when it repeats nothing.
+ */
+textWithoutQuote: string | null, 
+/**
  * Already sanitised; still shown isolated from the app.
  */
 html: string | null, attachments: Array<Attachment>, 

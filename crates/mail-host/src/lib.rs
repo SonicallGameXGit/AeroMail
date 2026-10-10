@@ -85,6 +85,12 @@ struct Open {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct MessageId {
+    message_id: i64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Seen {
     message_ids: Vec<i64>,
     seen: bool,
@@ -225,6 +231,16 @@ pub async fn dispatch(engine: &Engine, command: &str, params: Value) -> Result<V
         "list_messages" => {
             let FolderId { folder_id } = args(params)?;
             reply(engine.list_messages(folder_id))
+        }
+        // The rows of the message list: conversations, or single messages
+        // when they are turned off. From the cache, like `list_messages`.
+        "list_conversations" => {
+            let FolderId { folder_id } = args(params)?;
+            reply(engine.list_conversations(folder_id))
+        }
+        "conversation" => {
+            let MessageId { message_id } = args(params)?;
+            reply(engine.conversation(message_id))
         }
         "sync_folder" => {
             let Sync { folder_id, grow } = args(params)?;

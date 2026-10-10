@@ -1,7 +1,7 @@
 <script lang="ts">
     import { onMount } from 'svelte'
     import { toMailError } from '$lib/api'
-    import type { Account, Api, AppSettings, Attachment, Folder, MailError, MailEvent, MessageContent, MessageSummary, NotificationTarget, ReplyMode } from '$lib/api'
+    import type { Account, Api, AppSettings, Attachment, Conversation, ConversationSettings, Folder, MailError, MailEvent, MessageContent, MessageSummary, NotificationTarget, ReplyMode } from '$lib/api'
     import Backdrop from '$lib/design/Backdrop.svelte'
     import Button from '$lib/design/Button.svelte'
     import GlassWindow from '$lib/design/GlassWindow.svelte'
@@ -17,6 +17,7 @@
     import { t } from '$lib/i18n'
     import AccountMenu from './AccountMenu.svelte'
     import Composer from './Composer.svelte'
+    import ConversationView from './ConversationView.svelte'
     import {
         clampList,
         clampSidebar,
@@ -32,7 +33,7 @@
     import MessageList from './MessageList.svelte'
     import Reader from './Reader.svelte'
     import Sidebar from './Sidebar.svelte'
-    import { emptyForm, errorMessage, formFromDraft, groupFolders, pictureKey, senderPicture, toOutgoing, type ComposeForm, type Pictures } from './workspace'
+    import { answerTarget, emptyForm, errorMessage, formFromDraft, groupFolders, pictureKey, senderPicture, toOutgoing, type ComposeForm, type Pictures } from './workspace'
 
     let { api }: { api: Api } = $props()
 
@@ -45,9 +46,13 @@
     // The account whose folders are shown.
     let accountId = $state<number | null>(null)
     let selectedFolder = $state<Folder | null>(null)
-    let messages = $state<MessageSummary[]>([])
+    // The rows of the open folder: conversations, or messages on their own.
+    let conversations = $state<Conversation[]>([])
+    // The message its row was opened by; the row is the one holding it.
     let selectedId = $state<number | null>(null)
+    // What is open: one message, or a conversation of several (oldest first).
     let content = $state<MessageContent | null>(null)
+    let thread = $state<MessageSummary[] | null>(null)
     let remoteAllowed = $state(false)
 
     let syncing = $state(false)
@@ -80,6 +85,11 @@
             icon: 'App',
             customIcon: null,
         },
+        conversations: {
+            enabled: false,
+            sameSubject: false,
+            otherFolders: false,
+        },
     })
     let pictures = $state<Pictures>({})
     // Addresses already asked about, so a refreshed list asks nothing twice.
@@ -89,7 +99,7 @@
     let sending = $state(false)
     let sendError = $state<MailError | null>(null)
 
-    let selected = $derived(messages.find((message) => message.id === selectedId) ?? null)
+    let selected = $derived(conversations.find((conversation) => selectedId !== null && conversation.messageIds.includes(selectedId)) ?? null)
     let account = $derived(accounts?.find((candidate) => candidate.id === accountId) ?? null)
     let accountFolders = $derived(accountId === null ? [] : folders[accountId] ?? [])
     let archiveFolder = $derived(accountFolders.find((folder) => folder.role === 'Archive' && folder.selectable) ?? null)
@@ -100,7 +110,8 @@
         return [...groups.main, ...groups.custom.map((entry) => entry.folder)]
             .filter((folder) => folder.id !== selectedFolder?.id)
     })
-    let hasMore = $derived(selectedFolder !== null && messages.length < selectedFolder.total)
+    let listed = $derived(conversations.reduce((sum, conversation) => sum + conversation.messageIds.length, 0))
+    let hasMore = $derived(selectedFolder !== null && listed < selectedFolder.total)
 
     // Runs an action and shows its failure in the error bar instead of losing it.
     const guard = async (action: () => Promise<void>) => {
@@ -119,17 +130,41 @@
         }
     }
 
+    const close = () => {
+        selectedId = null
+        content = null
+        thread = null
+    }
+
+    // The rows of a folder, read again from the cache.
+    const reloadList = async (folder: Folder) => {
+        const rows = await api.listConversations(folder.id)
+        // The user may have moved on to another folder in the meantime.
+        if (selectedFolder?.id === folder.id) {
+            conversations = rows
+        }
+    }
+
+    // The open conversation, read again from the cache: a reply may have joined it.
+    const reloadThread = async () => {
+        const id = selectedId
+        if (thread === null || id === null) {
+            return
+        }
+
+        const fresh = await api.conversation(id)
+        if (thread !== null && selectedId === id) {
+            thread = fresh
+        }
+    }
+
     const sync = async (folder: Folder, grow: boolean) => {
         syncing = true
         try {
-            const fresh = await api.syncFolder(folder.id, grow)
-            // The user may have moved on to another folder in the meantime.
-            if (selectedFolder?.id === folder.id) {
-                messages = fresh
-                if (selectedId !== null && !fresh.some((message) => message.id === selectedId)) {
-                    selectedId = null
-                    content = null
-                }
+            await api.syncFolder(folder.id, grow)
+            await reloadList(folder)
+            if (selectedFolder?.id === folder.id && selectedId !== null && selected === null) {
+                close()
             }
             await reloadFolders(folder.accountId)
         } finally {
@@ -139,19 +174,17 @@
 
     const selectFolder = (folder: Folder) => guard(async () => {
         selectedFolder = folder
-        selectedId = null
-        content = null
+        close()
         // Cached messages show at once; the server is asked right after.
-        messages = await api.listMessages(folder.id)
+        await reloadList(folder)
         await sync(folder, false)
     })
 
     const selectAccount = async (next: Account) => {
         accountId = next.id
         selectedFolder = null
-        messages = []
-        selectedId = null
-        content = null
+        conversations = []
+        close()
 
         const list = (folders[next.id] ?? []).filter((folder) => folder.selectable)
         const first = list.find((folder) => folder.role === 'Inbox') ?? list[0]
@@ -167,7 +200,8 @@
             return
         }
 
-        for (const message of messages) {
+        const shown = [...conversations.map((conversation) => conversation.latest), ...thread ?? []]
+        for (const message of shown) {
             const sender = message.from[0]
             if (sender === undefined || asked[pictureKey(sender.email)] === true) {
                 continue
@@ -198,6 +232,10 @@
         return write
     }
 
+    const sameGrouping = (a: ConversationSettings, b: ConversationSettings): boolean => {
+        return a.enabled === b.enabled && a.sameSubject === b.sameSubject && a.otherFolders === b.otherFolders
+    }
+
     const changeSettings = (next: AppSettings) => guard(async () => {
         const before = settings
         // Notification choices show at once: their texts change with every
@@ -207,6 +245,7 @@
             && next.remoteImages === before.remoteImages
             && next.switchToNewAccount === before.switchToNewAccount
             && next.theme === before.theme
+            && sameGrouping(next.conversations, before.conversations)
         if (onlyNotifications) {
             settings = next
         }
@@ -227,12 +266,19 @@
         settings = next
 
         // The open message is shown the way the new setting says.
-        if (next.remoteImages !== before.remoteImages && selectedId !== null) {
-            const id = selectedId
+        if (next.remoteImages !== before.remoteImages && content !== null) {
+            const id = content.summary.id
             const opened = await api.openMessage(id, false)
             if (selectedId === id) {
                 content = opened
                 remoteAllowed = false
+            }
+        }
+        // The list is grouped anew, and what was open is opened the new way.
+        if (!sameGrouping(next.conversations, before.conversations) && selectedFolder !== null) {
+            await reloadList(selectedFolder)
+            if (selected !== null) {
+                await openConversation(selected)
             }
         }
     })
@@ -288,32 +334,59 @@
         await reloadFolders(folder.accountId)
     })
 
-    const patch = (id: number, change: (message: MessageSummary) => MessageSummary) => {
-        messages = messages.map((message) => message.id === id ? change(message) : message)
-        if (content !== null && content.summary.id === id) {
+    // Changes the flags of messages wherever they are shown open.
+    const patch = (ids: number[], flags: Partial<MessageSummary['flags']>) => {
+        const change = (message: MessageSummary): MessageSummary => {
+            return ids.includes(message.id) ? { ...message, flags: { ...message.flags, ...flags } } : message
+        }
+        if (content !== null) {
             content = { ...content, summary: change(content.summary) }
+        }
+        if (thread !== null) {
+            thread = thread.map(change)
         }
     }
 
-    const setSeen = async (message: MessageSummary, seen: boolean) => {
-        await api.setSeen([message.id], seen)
-        patch(message.id, (current) => ({ ...current, flags: { ...current.flags, seen } }))
-        await reloadFolders(selectedFolder?.accountId ?? 0)
+    const setSeen = async (ids: number[], seen: boolean) => {
+        await api.setSeen(ids, seen)
+        patch(ids, { seen })
+        if (selectedFolder !== null) {
+            await reloadList(selectedFolder)
+            await reloadFolders(selectedFolder.accountId)
+        }
     }
 
-    const openMessage = (message: MessageSummary) => guard(async () => {
+    // A conversation of several opens as a chat; a message on its own as before.
+    // Opening it reads it: everything unread in it is marked read.
+    const openConversation = (conversation: Conversation) => guard(async () => {
+        const message = conversation.latest
         selectedId = message.id
         content = null
+        thread = null
         remoteAllowed = false
         opening = true
         try {
+            if (conversation.count > 1) {
+                const opened = await api.conversation(message.id)
+                if (selectedId !== message.id) {
+                    return
+                }
+                thread = opened
+                const unread = opened.filter((candidate) => !candidate.flags.seen).map((candidate) => candidate.id)
+                if (unread.length > 0) {
+                    await setSeen(unread, true)
+                }
+
+                return
+            }
+
             const opened = await api.openMessage(message.id, false)
             if (selectedId !== message.id) {
                 return
             }
             content = opened
             if (!message.flags.seen) {
-                await setSeen(message, true)
+                await setSeen([message.id], true)
             }
         } finally {
             opening = false
@@ -321,10 +394,10 @@
     })
 
     const showRemote = () => guard(async () => {
-        if (selected === null) {
+        if (content === null) {
             return
         }
-        const id = selected.id
+        const id = content.summary.id
         const opened = await api.openMessage(id, true)
         if (selectedId === id) {
             content = opened
@@ -332,50 +405,62 @@
         }
     })
 
+    // Read when everything is read: marking it unread marks its newest
+    // message, which is enough to bring it back to attention.
     const toggleSeen = () => guard(async () => {
-        if (selected !== null) {
-            await setSeen(selected, !selected.flags.seen)
+        if (selected === null) {
+            return
+        }
+        if (selected.unread > 0) {
+            await setSeen(selected.messageIds, true)
+        } else {
+            await setSeen([selected.latest.id], false)
         }
     })
 
-    const toggleFlagged = (message: MessageSummary) => guard(async () => {
-        const flagged = !message.flags.flagged
-        await api.setFlagged([message.id], flagged)
-        patch(message.id, (current) => ({ ...current, flags: { ...current.flags, flagged } }))
+    // Flagging a conversation flags its newest message; unflagging clears every flag in it.
+    const toggleFlagged = (conversation: Conversation) => guard(async () => {
+        const flagged = !conversation.flagged
+        const ids = flagged ? [conversation.latest.id] : conversation.messageIds
+        await api.setFlagged(ids, flagged)
+        patch(ids, { flagged })
+        if (selectedFolder !== null) {
+            await reloadList(selectedFolder)
+        }
     })
 
-    // After a message leaves the folder, the one below it takes its place.
-    const leave = async (id: number) => {
-        const index = messages.findIndex((message) => message.id === id)
-        messages = messages.filter((message) => message.id !== id)
-        selectedId = null
-        content = null
+    // After a row leaves the folder, the one below it takes its place.
+    const leave = async (gone: Conversation) => {
+        const index = conversations.findIndex((conversation) => conversation.latest.id === gone.latest.id)
+        conversations = conversations.filter((conversation) => conversation.latest.id !== gone.latest.id)
+        close()
         if (selectedFolder !== null) {
             await reloadFolders(selectedFolder.accountId)
         }
 
-        const next = messages[index] ?? messages[index - 1]
+        const next = conversations[index] ?? conversations[index - 1]
         if (next !== undefined) {
-            await openMessage(next)
+            await openConversation(next)
         }
     }
 
+    // Deleting or moving a conversation takes all of its messages in this folder.
     const remove = () => guard(async () => {
         if (selected === null) {
             return
         }
-        const id = selected.id
-        await api.deleteMessages([id])
-        await leave(id)
+        const gone = selected
+        await api.deleteMessages(gone.messageIds)
+        await leave(gone)
     })
 
     const moveTo = (folderId: number) => guard(async () => {
         if (selected === null) {
             return
         }
-        const id = selected.id
-        await api.moveMessages([id], folderId)
-        await leave(id)
+        const gone = selected
+        await api.moveMessages(gone.messageIds, folderId)
+        await leave(gone)
     })
 
     const compose = () => {
@@ -386,13 +471,57 @@
         form = emptyForm(accountId)
     }
 
-    const reply = (mode: ReplyMode) => guard(async () => {
-        if (selected === null || selectedFolder === null) {
+    // The composer, opened on a reply to `message` that starts with `text`.
+    const startReply = async (message: MessageSummary, mode: ReplyMode, text = '') => {
+        if (selectedFolder === null) {
             return
         }
-        const draft = await api.replyDraft(selected.id, mode)
+        const draft = await api.replyDraft(message.id, mode)
+        const started = formFromDraft(selectedFolder.accountId, draft)
         sendError = null
-        form = formFromDraft(selectedFolder.accountId, draft)
+        form = { ...started, body: text + started.body }
+    }
+
+    // What the toolbar answers: the open message, or in a conversation the
+    // newest message someone else wrote.
+    const replyTarget = (): MessageSummary | null => {
+        if (thread !== null && account !== null) {
+            return answerTarget(thread, account.settings.email)
+        }
+
+        return content?.summary ?? selected?.latest ?? null
+    }
+
+    const reply = (mode: ReplyMode) => guard(async () => {
+        const target = replyTarget()
+        if (target !== null) {
+            await startReply(target, mode)
+        }
+    })
+
+    // What is written under a conversation goes to everyone in it, as an
+    // answer to its newest message from someone else. A failure is shown by
+    // the conversation, next to what was written.
+    const answer = async (text: string) => {
+        const target = replyTarget()
+        if (target === null || selectedFolder === null) {
+            return
+        }
+        const folder = selectedFolder
+        const draft = await api.replyDraft(target.id, 'ReplyAll')
+        const started = formFromDraft(folder.accountId, draft)
+        await api.sendMessage(toOutgoing({ ...started, body: text + started.body }))
+
+        // The core has the copy in Sent by now: it joins the conversation.
+        await reloadThread()
+        await reloadList(folder)
+    }
+
+    const expand = (text: string) => guard(async () => {
+        const target = replyTarget()
+        if (target !== null) {
+            await startReply(target, 'ReplyAll', text)
+        }
     })
 
     const send = async () => {
@@ -406,6 +535,10 @@
             form = null
             if (selectedFolder !== null && selectedFolder.role === 'Sent') {
                 await sync(selectedFolder, false)
+            } else if (selectedFolder !== null) {
+                // A reply joins its conversation.
+                await reloadList(selectedFolder)
+                await reloadThread()
             }
         } catch (caught) {
             sendError = toMailError(caught)
@@ -414,10 +547,8 @@
         }
     }
 
-    const saveAttachment = (attachment: Attachment) => guard(async () => {
-        if (selected !== null) {
-            await api.saveAttachment(selected.id, attachment)
-        }
+    const saveAttachment = (message: MessageSummary, attachment: Attachment) => guard(async () => {
+        await api.saveAttachment(message.id, attachment)
     })
 
     const openLink = (url: string) => guard(() => api.openExternal(url))
@@ -444,9 +575,8 @@
         if (accountId === gone.id) {
             accountId = null
             selectedFolder = null
-            messages = []
-            selectedId = null
-            content = null
+            conversations = []
+            close()
         }
         await load()
     })
@@ -497,12 +627,10 @@
         }
 
         await reloadFolders(event.accountId)
-        if (selectedFolder?.id === event.folderId) {
-            const fresh = await api.listMessages(event.folderId)
-            // The user may have moved on while the cache was read.
-            if (selectedFolder?.id === event.folderId) {
-                messages = fresh
-            }
+        // A conversation takes messages from any folder of its account.
+        if (selectedFolder !== null && selectedFolder.accountId === event.accountId) {
+            await reloadList(selectedFolder)
+            await reloadThread()
         }
     }
 
@@ -516,9 +644,9 @@
         settingsOpen = false
         accountId = target.accountId
         await selectFolder(folder)
-        const message = messages.find((candidate) => candidate.id === target.messageId)
-        if (message !== undefined) {
-            await openMessage(message)
+        const conversation = conversations.find((candidate) => candidate.messageIds.includes(target.messageId))
+        if (conversation !== undefined) {
+            await openConversation(conversation)
         }
     })
 
@@ -621,12 +749,13 @@
                 <div class="pane list">
                     <MessageList
                         folder={selectedFolder}
-                        {messages}
+                        {conversations}
                         {selectedId}
+                        ownEmail={account?.settings.email ?? ''}
                         {pictures}
                         {hasMore}
                         busy={syncing}
-                        onselect={openMessage}
+                        onselect={openConversation}
                         onflag={toggleFlagged}
                         onrefresh={refresh}
                         onmore={() => guard(async () => {
@@ -645,16 +774,32 @@
                     onreset={() => resize({ list: defaultLayout.list })}
                 />
                 <div class="pane reader">
-                    <Reader
-                        {content}
-                        busy={opening}
-                        remoteAllowed={remoteAllowed || settings.remoteImages}
-                        picture={content === null ? null : senderPicture(pictures, content.summary)}
-                        toolbar={selected === null ? undefined : actions}
-                        onshowremote={showRemote}
-                        onsave={saveAttachment}
-                        onlink={openLink}
-                    />
+                    {#if thread !== null && account !== null}
+                        <ConversationView
+                            {api}
+                            {thread}
+                            ownEmail={account.settings.email}
+                            {pictures}
+                            remoteImages={settings.remoteImages}
+                            toolbar={actions}
+                            onreply={(message, mode) => guard(() => startReply(message, mode))}
+                            onanswer={answer}
+                            onexpand={expand}
+                            onsave={saveAttachment}
+                            onlink={openLink}
+                        />
+                    {:else}
+                        <Reader
+                            {content}
+                            busy={opening}
+                            remoteAllowed={remoteAllowed || settings.remoteImages}
+                            picture={content === null ? null : senderPicture(pictures, content.summary)}
+                            toolbar={selected === null ? undefined : actions}
+                            onshowremote={showRemote}
+                            onsave={(attachment) => content !== null && saveAttachment(content.summary, attachment)}
+                            onlink={openLink}
+                        />
+                    {/if}
                 </div>
             </div>
         </div>
@@ -662,9 +807,10 @@
 
     {#snippet actions()}
         {#if selected !== null}
-            {@const message = selected}
+            {@const conversation = selected}
             <MessageActions
-                {message}
+                seen={conversation.unread === 0}
+                flagged={conversation.flagged}
                 canArchive={archiveFolder !== null}
                 {moveTargets}
                 onreply={reply}
@@ -672,7 +818,7 @@
                 onmove={moveTo}
                 ondelete={remove}
                 onseen={toggleSeen}
-                onflag={() => toggleFlagged(message)}
+                onflag={() => toggleFlagged(conversation)}
             />
         {/if}
     {/snippet}

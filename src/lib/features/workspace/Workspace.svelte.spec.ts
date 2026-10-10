@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { page, userEvent } from 'vitest/browser'
 import { render } from 'vitest-browser-svelte'
-import { announce, clickNotification, createFakeApi, defaultSettings, emptyState, fakePassword, guessDetection, seededState } from '$lib/features/accounts/fakeApi'
+import { announce, clickNotification, createFakeApi, defaultSettings, emptyState, fakePassword, guessDetection, seededState, withConversation } from '$lib/features/accounts/fakeApi'
 import '$lib/design/base.css'
 import Workspace from './Workspace.svelte'
 
@@ -19,13 +19,22 @@ const pixel = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUw
 const pictureOf = (subject: string) => row(subject).element().querySelector('img')
 const toolbar = () => page.getByRole('toolbar', { name: 'Message actions' })
 // The window remembers the category opened last, so each test names its own.
-const openSettings = async (category: 'Accounts' | 'Appearance' | 'Privacy' | 'Notifications' = 'Accounts') => {
+const openSettings = async (category: 'Accounts' | 'Appearance' | 'Conversations' | 'Privacy' | 'Notifications' = 'Accounts') => {
     await page.getByRole('button', { name: /^Account: / }).click()
     await page.getByRole('menuitem', { name: 'Settings' }).click()
     await page.getByRole('tab', { name: category }).click()
 }
 const settings = () => page.getByRole('dialog', { name: 'Settings' })
 const addedBox = () => page.getByRole('dialog', { name: 'Account added' })
+const rows = () => page.getByRole('list', { name: 'Messages' }).getByRole('listitem')
+const timeline = () => page.getByRole('log', { name: 'Conversation' })
+const bubbles = () => timeline().getByRole('article')
+const startWithConversation = () => {
+    const state = withConversation(seededState())
+    render(Workspace, { api: createFakeApi(state) })
+
+    return state
+}
 const addCorpAccount = async () => {
     await page.getByRole('button', { name: 'Add account' }).click()
     await page.getByLabelText('Email address').fill('me@corp.example')
@@ -663,5 +672,101 @@ describe('Workspace', () => {
         await expect.element(settings().getByRole('radio', { name: /^Automatic/ })).toHaveAttribute('aria-checked', 'true')
         expect(document.documentElement.hasAttribute('data-theme')).toBe(false)
         expect(state.settings.theme).toBe('System')
+    })
+
+    it('lists a conversation as one row, with everyone who wrote in it and how many messages', async () => {
+        startWithConversation()
+
+        await expect.element(row('Re: Lunch on Friday?')).toBeInTheDocument()
+        await expect.poll(() => rows().all().length).toBe(2)
+        await expect.element(row('Re: Lunch on Friday?')).toHaveTextContent('Ann, me')
+        await expect.element(row('Re: Lunch on Friday?')).toHaveAccessibleName(/3 messages/)
+        // A message on its own has no count.
+        await expect.element(row('Quarterly report')).not.toHaveAccessibleName(/messages/)
+    })
+
+    it('opens a conversation as a chat, oldest first, with the account\'s own reply, and reads it', async () => {
+        const state = startWithConversation()
+
+        await row('Re: Lunch on Friday?').click()
+
+        await expect.element(page.getByRole('heading', { name: 'Lunch on Friday?' })).toBeInTheDocument()
+        await expect.poll(() => bubbles().all().length).toBe(3)
+        await expect.element(bubbles().nth(0)).toHaveAccessibleName(/^Ann,/)
+        await expect.element(bubbles().nth(1)).toHaveAccessibleName(/^You,/)
+        await expect.element(bubbles().nth(2)).toHaveAccessibleName(/^Ann,/)
+        const newest = bubbles().nth(2)
+        await expect.element(newest).toHaveTextContent('Body of Re: Lunch on Friday?')
+        expect(bubbles().nth(1).element().classList.contains('mine')).toBe(true)
+
+        // What a message repeats of earlier ones waits behind a button.
+        await expect.element(newest).not.toHaveTextContent('Earlier text')
+        await newest.getByRole('button', { name: 'Show quoted text' }).click()
+        await expect.element(newest).toHaveTextContent('Earlier text')
+
+        await expect.poll(() => state.messages.filter((message) => !message.flags.seen).length).toBe(0)
+        await expect.element(folder('Inbox')).not.toHaveTextContent('1')
+    })
+
+    it('answers everyone in a conversation from the field under it, and shows the answer', async () => {
+        const state = startWithConversation()
+        await row('Re: Lunch on Friday?').click()
+        await expect.poll(() => bubbles().all().length).toBe(3)
+
+        const field = page.getByRole('textbox', { name: 'Reply' })
+        await expect.element(field).toHaveAttribute('placeholder', 'Reply to Ann…')
+        await expect.element(page.getByRole('button', { name: 'Send' })).toBeDisabled()
+        await field.fill('Sounds good, see you there.')
+        await page.getByRole('button', { name: 'Send' }).click()
+
+        await expect.poll(() => state.sent.length).toBe(1)
+        expect(state.sent[0]?.to).toEqual(['ann@example.com'])
+        expect(state.sent[0]?.inReplyTo).toBe('m13@example.com')
+        expect(state.sent[0]?.body.startsWith('Sounds good, see you there.\n\n> Body of')).toBe(true)
+        await expect.poll(() => bubbles().all().length).toBe(4)
+        await expect.element(field).toHaveValue('')
+    })
+
+    it('goes on writing an answer in the full editor', async () => {
+        startWithConversation()
+        await row('Re: Lunch on Friday?').click()
+
+        await page.getByRole('textbox', { name: 'Reply' }).fill('Let me think')
+        await page.getByRole('button', { name: 'Open in the full editor' }).click()
+
+        await expect.element(page.getByLabelText('To', { exact: true })).toHaveValue('ann@example.com')
+        await expect.element(page.getByLabelText('Message', { exact: true })).toHaveValue('Let me think\n\n> Body of Re: Lunch on Friday?\n')
+    })
+
+    it('deletes a whole conversation from the folder and leaves the account\'s reply in Sent', async () => {
+        const state = startWithConversation()
+
+        await row('Re: Lunch on Friday?').click()
+        await toolbar().getByRole('button', { name: 'Delete' }).click()
+
+        await expect.element(page.getByRole('heading', { name: 'Quarterly report' })).toBeInTheDocument()
+        const where = (id: number) => state.messages.find((message) => message.id === id)?.folderId
+        expect([where(11), where(13), where(12)]).toEqual([4, 4, 2])
+    })
+
+    it('shows every message on its own row when conversations are turned off', async () => {
+        const state = startWithConversation()
+        await expect.poll(() => rows().all().length).toBe(2)
+
+        await openSettings('Conversations')
+        const grouping = settings().getByRole('checkbox', { name: 'Group messages into conversations' })
+        await expect.element(grouping).toBeChecked()
+        await expect.element(settings().getByRole('checkbox', { name: /same subject/ })).toBeChecked()
+        await grouping.click()
+
+        expect(state.settings.conversations.enabled).toBe(false)
+        // The rest of it is out of the way while it is off.
+        await expect.element(settings().getByRole('checkbox', { name: /same subject/ })).not.toBeInTheDocument()
+        await settings().getByRole('button', { name: 'Done' }).click()
+        await expect.poll(() => rows().all().length).toBe(3)
+
+        await row('Re: Lunch on Friday?').click()
+        await expect.element(page.getByRole('heading', { name: 'Re: Lunch on Friday?' })).toBeInTheDocument()
+        await expect.element(timeline()).not.toBeInTheDocument()
     })
 })

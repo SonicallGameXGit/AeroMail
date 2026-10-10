@@ -17,6 +17,22 @@ pub struct AppSettings {
     pub switch_to_new_account: bool,
     pub theme: Theme,
     pub notifications: NotificationSettings,
+    pub conversations: ConversationSettings,
+}
+
+/// How messages are gathered into conversations (`crate::conversation`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct ConversationSettings {
+    /// Off: the list shows every message on its own row, as it always did.
+    pub enabled: bool,
+    /// Messages from one sender with one subject are a conversation too,
+    /// even without reply headers (repeated notifications).
+    pub same_subject: bool,
+    /// A conversation also shows its messages kept in other folders, like
+    /// the user's own replies in Sent. Never from Trash, Junk or Drafts.
+    pub other_folders: bool,
 }
 
 /// How the app looks. The UI draws each theme; the core only keeps the choice.
@@ -99,6 +115,17 @@ impl Default for AppSettings {
             switch_to_new_account: true,
             theme: Theme::System,
             notifications: NotificationSettings::default(),
+            conversations: ConversationSettings::default(),
+        }
+    }
+}
+
+impl Default for ConversationSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            same_subject: true,
+            other_folders: true,
         }
     }
 }
@@ -167,6 +194,7 @@ impl AppSettings {
     pub fn from_stored(stored: impl Fn(&str) -> Option<String>) -> Self {
         let default = Self::default();
         let base = &default.notifications;
+        let grouping = &default.conversations;
         let switch = |name: &str, fallback: bool| match stored(name).as_deref() {
             Some("on") => true,
             Some("off") => false,
@@ -221,6 +249,11 @@ impl AppSettings {
                 icon,
                 custom_icon: stored(CUSTOM_ICON).filter(|icon| is_custom_icon(icon)),
             },
+            conversations: ConversationSettings {
+                enabled: switch(CONVERSATIONS, grouping.enabled),
+                same_subject: switch(SAME_SUBJECT, grouping.same_subject),
+                other_folders: switch(OTHER_FOLDERS, grouping.other_folders),
+            },
         }
     }
 
@@ -264,6 +297,9 @@ impl AppSettings {
             ),
             (ICON, Some(icon.to_string())),
             (CUSTOM_ICON, notifications.custom_icon.clone()),
+            (CONVERSATIONS, switch(self.conversations.enabled)),
+            (SAME_SUBJECT, switch(self.conversations.same_subject)),
+            (OTHER_FOLDERS, switch(self.conversations.other_folders)),
         ]
     }
 }
@@ -284,6 +320,9 @@ const BODY: &str = "notification_body";
 const PREVIEW_LENGTH: &str = "notification_preview_length";
 const ICON: &str = "notification_icon";
 const CUSTOM_ICON: &str = "notification_custom_icon";
+const CONVERSATIONS: &str = "conversations";
+const SAME_SUBJECT: &str = "conversation_same_subject";
+const OTHER_FOLDERS: &str = "conversation_other_folders";
 
 #[cfg(test)]
 mod tests {
@@ -324,6 +363,11 @@ mod tests {
                 preview_length: 120,
                 icon: NotificationIcon::Custom,
                 custom_icon: Some("data:image/png;base64,AAAA".to_string()),
+            },
+            conversations: ConversationSettings {
+                enabled: false,
+                same_subject: false,
+                other_folders: false,
             },
         };
 

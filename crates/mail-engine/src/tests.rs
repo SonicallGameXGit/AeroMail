@@ -3,7 +3,9 @@ use std::sync::Arc;
 use mail_core::account::{AccountSettings, ServerRole};
 use mail_core::draft::ReplyMode;
 use mail_core::error::ErrorKind;
-use mail_core::mail::{Account, Folder, FolderRole, MailEvent, MessageContent, OutgoingMessage};
+use mail_core::mail::{
+    Account, Folder, FolderRole, MailEvent, MessageContent, MessageSummary, OutgoingMessage,
+};
 use mail_core::settings::AppSettings;
 use mail_core::transport::Flag;
 use mail_store::Store;
@@ -885,6 +887,230 @@ async fn moving_takes_the_message_to_the_target_folder() {
         world.engine.open_message(id, false).await.unwrap_err().kind,
         ErrorKind::NotFound
     );
+}
+
+// Conversations
+
+/// A message with the headers that decide its conversation, written on
+/// `day` of October 2026. It answers the last of `parents`, and references
+/// them all, as mail apps do.
+fn mail(from: &str, id: &str, parents: &[&str], subject: &str, day: u32) -> Vec<u8> {
+    let answers = match parents.last() {
+        None => String::new(),
+        Some(last) => {
+            let all: Vec<String> = parents.iter().map(|parent| format!("<{parent}>")).collect();
+            format!("In-Reply-To: <{last}>\r\nReferences: {}\r\n", all.join(" "))
+        }
+    };
+
+    format!(
+        "From: {from}\r\nTo: someone@example.com\r\nSubject: {subject}\r\n\
+         Date: {day} Oct 2026 10:00:00 +0000\r\nMessage-ID: <{id}>\r\n{answers}\r\n\
+         Text of {id}\r\n"
+    )
+    .into_bytes()
+}
+
+const ANN: &str = "Ann <ann@example.com>";
+const ME: &str = "Me <me@example.com>";
+
+/// An inbox with a conversation of three (one of them the user's reply in
+/// Sent) and a message of its own; Trash holds a reply that was thrown away.
+async fn with_conversation() -> (World, Account) {
+    let (world, account) = with_account().await;
+    {
+        let mut remote = world.remote.lock().unwrap();
+        remote.deliver_raw("INBOX", mail(ANN, "a@x", &[], "Lunch", 1), true);
+        remote.deliver_raw("Sent", mail(ME, "b@x", &["a@x"], "Re: Lunch", 2), true);
+        remote.deliver_raw("Trash", mail(ANN, "t@x", &["a@x"], "Re: Lunch", 3), false);
+        remote.deliver_raw(
+            "INBOX",
+            mail("bob@example.com", "n@x", &[], "News", 4),
+            true,
+        );
+        remote.deliver_raw(
+            "INBOX",
+            mail(ANN, "c@x", &["a@x", "b@x"], "Re: Lunch", 5),
+            false,
+        );
+    }
+    for role in [FolderRole::Inbox, FolderRole::Sent, FolderRole::Trash] {
+        let folder = folder(&world, &account, role);
+        world.engine.sync_folder(folder.id, false).await.unwrap();
+    }
+
+    (world, account)
+}
+
+fn subjects(messages: &[MessageSummary]) -> Vec<&str> {
+    messages
+        .iter()
+        .map(|message| message.subject.as_str())
+        .collect()
+}
+
+#[tokio::test]
+async fn replies_are_one_conversation_with_the_users_own_reply_from_sent() {
+    let (world, account) = with_conversation().await;
+    let inbox = folder(&world, &account, FolderRole::Inbox);
+    let messages = world.engine.list_messages(inbox.id).unwrap();
+
+    let rows = world.engine.list_conversations(inbox.id).unwrap();
+
+    assert_eq!(rows.len(), 2);
+    let lunch = &rows[0];
+    assert_eq!(lunch.latest.subject, "Re: Lunch");
+    assert_eq!(lunch.message_ids, vec![messages[0].id, messages[2].id]);
+    assert_eq!((lunch.count, lunch.unread, lunch.flagged), (3, 1, false));
+    let senders: Vec<&str> = lunch
+        .senders
+        .iter()
+        .map(|sender| sender.email.as_str())
+        .collect();
+    assert_eq!(senders, vec!["ann@example.com", "me@example.com"]);
+    assert_eq!(rows[1].latest.subject, "News");
+    assert_eq!(rows[1].count, 1);
+
+    // Oldest first, whichever of its messages is asked for.
+    let opened = world.engine.conversation(messages[2].id).unwrap();
+    assert_eq!(subjects(&opened), vec!["Lunch", "Re: Lunch", "Re: Lunch"]);
+    assert_eq!(opened[1].from[0].email, "me@example.com");
+    assert_eq!(world.engine.conversation(messages[0].id).unwrap(), opened);
+    assert_eq!(
+        subjects(&world.engine.conversation(messages[1].id).unwrap()),
+        vec!["News"]
+    );
+}
+
+#[tokio::test]
+async fn a_conversation_listed_in_trash_shows_what_is_kept_elsewhere() {
+    let (world, account) = with_conversation().await;
+    let trash = folder(&world, &account, FolderRole::Trash);
+
+    let rows = world.engine.list_conversations(trash.id).unwrap();
+
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].message_ids.len(), 1);
+    assert_eq!(rows[0].count, 4);
+}
+
+#[tokio::test]
+async fn a_message_kept_in_two_folders_is_shown_once() {
+    let (world, account) = with_conversation().await;
+    world
+        .remote
+        .lock()
+        .unwrap()
+        .deliver_raw("Archive", mail(ANN, "a@x", &[], "Lunch", 1), true);
+    let archive = folder(&world, &account, FolderRole::Archive);
+    world.engine.sync_folder(archive.id, false).await.unwrap();
+    let inbox = folder(&world, &account, FolderRole::Inbox);
+
+    let rows = world.engine.list_conversations(inbox.id).unwrap();
+    assert_eq!(rows[0].count, 3);
+
+    // Listed in the archive, its own copy is the one shown.
+    let row = &world.engine.list_conversations(archive.id).unwrap()[0];
+    let opened = world.engine.conversation(row.latest.id).unwrap();
+    assert_eq!(opened.len(), 3);
+    assert_eq!(opened[0].folder_id, archive.id);
+}
+
+#[tokio::test]
+async fn the_settings_decide_what_is_grouped() {
+    let (world, account) = with_conversation().await;
+    {
+        let mut remote = world.remote.lock().unwrap();
+        remote.deliver_raw(
+            "INBOX",
+            mail("bank@example.com", "1@x", &[], "Your code", 6),
+            true,
+        );
+        remote.deliver_raw(
+            "INBOX",
+            mail("bank@example.com", "2@x", &[], "Your code", 7),
+            true,
+        );
+    }
+    let inbox = folder(&world, &account, FolderRole::Inbox);
+    world.engine.sync_folder(inbox.id, false).await.unwrap();
+    let counts = |world: &World| -> Vec<u32> {
+        world
+            .engine
+            .list_conversations(inbox.id)
+            .unwrap()
+            .iter()
+            .map(|row| row.count)
+            .collect()
+    };
+    assert_eq!(counts(&world), vec![2, 3, 1]);
+
+    let mut settings = AppSettings::default();
+    settings.conversations.same_subject = false;
+    world.engine.set_settings(settings.clone()).unwrap();
+    assert_eq!(counts(&world), vec![1, 1, 3, 1]);
+
+    settings.conversations.other_folders = false;
+    world.engine.set_settings(settings.clone()).unwrap();
+    assert_eq!(counts(&world), vec![1, 1, 2, 1]);
+    let latest = world.engine.list_conversations(inbox.id).unwrap()[2]
+        .latest
+        .id;
+    assert_eq!(world.engine.conversation(latest).unwrap().len(), 2);
+
+    settings.conversations.enabled = false;
+    world.engine.set_settings(settings).unwrap();
+    assert_eq!(counts(&world), vec![1, 1, 1, 1, 1]);
+    assert_eq!(world.engine.conversation(latest).unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_conversation_shows_each_message_without_what_it_quotes() {
+    let (world, account) = with_account().await;
+    let raw = format!(
+        "{}Sure.\r\n\r\nAnn wrote:\r\n> Lunch?\r\n",
+        String::from_utf8(mail(ME, "b@x", &["a@x"], "Re: Lunch", 2))
+            .unwrap()
+            .replace("Text of b@x\r\n", "")
+    );
+    world
+        .remote
+        .lock()
+        .unwrap()
+        .deliver_raw("INBOX", raw.into_bytes(), true);
+    let inbox = folder(&world, &account, FolderRole::Inbox);
+    let id = world.engine.sync_folder(inbox.id, false).await.unwrap()[0].id;
+
+    let content = world.engine.open_message(id, false).await.unwrap();
+
+    assert_eq!(content.text_without_quote.as_deref(), Some("Sure."));
+    assert!(content.text.unwrap().contains("> Lunch?"));
+}
+
+#[tokio::test]
+async fn the_users_replies_are_fetched_from_sent_when_conversations_show_them() {
+    let (world, account) = with_account().await;
+    let sent = folder(&world, &account, FolderRole::Sent);
+
+    world
+        .engine
+        .send_message(&outgoing(&account))
+        .await
+        .unwrap();
+    assert_eq!(
+        subjects(&world.engine.list_messages(sent.id).unwrap()),
+        vec!["Hello"]
+    );
+
+    let mut settings = AppSettings::default();
+    settings.conversations.other_folders = false;
+    world.engine.set_settings(settings).unwrap();
+    world
+        .engine
+        .send_message(&outgoing(&account))
+        .await
+        .unwrap();
+    assert_eq!(world.engine.list_messages(sent.id).unwrap().len(), 1);
 }
 
 // Writing

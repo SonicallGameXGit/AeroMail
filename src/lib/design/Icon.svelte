@@ -165,6 +165,10 @@
         <path d="M4.5 15v-3.5c3-2 6.5-2 9.5-.5 2-1 4-1.2 5.5-.8V15z" fill={green} />
         <path class="shine" d="M4.5 5.5h15v3.5c-5-1.5-10-1.5-15 0z" />
         <path class="steel" d="M9.5 17v2.5h5V17M7.5 20.5h9" fill={steel} />
+    {:else if name === 'conversation'}
+        <path class="green" d="M11.5 3h8A2.5 2.5 0 0 1 22 5.5v4a2.5 2.5 0 0 1-2.5 2.5H19v2.5L16 12h-4.5A2.5 2.5 0 0 1 9 9.5v-4A2.5 2.5 0 0 1 11.5 3z" fill={green} />
+        <path class="blue" d="M4.5 8.5h9A2.5 2.5 0 0 1 16 11v5a2.5 2.5 0 0 1-2.5 2.5H9l-3.5 3v-3h-1A2.5 2.5 0 0 1 2 16v-5a2.5 2.5 0 0 1 2.5-2.5z" fill={blue} />
+        <path class="shine" d="M3.5 11a1.5 1.5 0 0 1 1.5-1.5h8a1.5 1.5 0 0 1 1.5 1.5v1.2c-3.5-1-7.5-1-11 0z" />
     {:else if name === 'warning'}
         <path class="gold" d="M12 3 22 20.5H2z" fill={gold} />
         <path class="mark" d="M12 9.5v5M12 17.4v.2" />

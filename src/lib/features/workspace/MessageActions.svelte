@@ -1,5 +1,5 @@
 <script lang="ts">
-    import type { Folder, MessageSummary, ReplyMode } from '$lib/api'
+    import type { Folder, ReplyMode } from '$lib/api'
     import Button from '$lib/design/Button.svelte'
     import Menu from '$lib/design/Menu.svelte'
     import MenuItem from '$lib/design/MenuItem.svelte'
@@ -7,8 +7,10 @@
     import { folderIcon, folderLabel } from './workspace'
 
     type Props = {
-        // The message the actions apply to.
-        message: MessageSummary
+        // What the open message, or conversation as a whole, is: read when
+        // nothing in it is unread, flagged when anything in it is.
+        seen: boolean
+        flagged: boolean
         // False when the account has no archive folder.
         canArchive: boolean
         moveTargets: Folder[]
@@ -20,7 +22,7 @@
         onflag: () => void
     }
 
-    let { message, canArchive, moveTargets, onreply, onarchive, onmove, ondelete, onseen, onflag }: Props = $props()
+    let { seen, flagged, canArchive, moveTargets, onreply, onarchive, onmove, ondelete, onseen, onflag }: Props = $props()
 </script>
 
 <!-- Three groups, by what they do: answer the message, put it away, mark it. -->
@@ -56,14 +58,14 @@
     <div class="group" role="group">
         <Button
             variant="tool"
-            icon={message.flags.seen ? 'mailUnread' : 'mailOpen'}
-            label={message.flags.seen ? t('toolbar.markUnread') : t('toolbar.markRead')}
+            icon={seen ? 'mailUnread' : 'mailOpen'}
+            label={seen ? t('toolbar.markUnread') : t('toolbar.markRead')}
             onclick={onseen}
         />
         <Button
             variant="tool"
-            icon={message.flags.flagged ? 'flag' : 'flagOff'}
-            label={message.flags.flagged ? t('toolbar.unflag') : t('toolbar.flag')}
+            icon={flagged ? 'flag' : 'flagOff'}
+            label={flagged ? t('toolbar.unflag') : t('toolbar.flag')}
             onclick={onflag}
         />
     </div>

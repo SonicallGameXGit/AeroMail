@@ -262,13 +262,14 @@ impl ImapSession {
 
     /// What the message list shows of the messages in `set`, in one command.
     async fn fetch_summaries(&mut self, set: &str) -> MailResult<Vec<RemoteMessage>> {
-        // Only what the message list shows: whole header blocks are several
-        // times larger (signatures, routing) and were most of a sync.
+        // Only what the message list shows and groups by: whole header
+        // blocks are several times larger (signatures, routing) and were
+        // most of a sync.
         let stream = self
             .live()?
             .uid_fetch(
                 set,
-                "(UID FLAGS RFC822.SIZE INTERNALDATE BODY.PEEK[HEADER.FIELDS (SUBJECT FROM TO CC DATE)])",
+                "(UID FLAGS RFC822.SIZE INTERNALDATE BODY.PEEK[HEADER.FIELDS (SUBJECT FROM TO CC DATE MESSAGE-ID IN-REPLY-TO REFERENCES)])",
             )
             .await
             .map_err(imap_error)?;

@@ -306,7 +306,7 @@ async fn settings_and_sender_pictures_go_under_the_names_the_ui_uses() {
     assert_eq!(
         dispatch(&engine, "settings", Value::Null).await,
         Ok(
-            json!({ "senderPictures": true, "remoteImages": false, "switchToNewAccount": true, "theme": "System", "notifications": notifications })
+            json!({ "senderPictures": true, "remoteImages": false, "switchToNewAccount": true, "theme": "System", "notifications": notifications, "conversations": { "enabled": true, "sameSubject": true, "otherFolders": true } })
         )
     );
 
@@ -322,7 +322,8 @@ async fn settings_and_sender_pictures_go_under_the_names_the_ui_uses() {
         "icon": "None",
         "customIcon": null,
     });
-    let changed = json!({ "senderPictures": false, "remoteImages": true, "switchToNewAccount": false, "theme": "Slate", "notifications": quiet });
+    let grouping = json!({ "enabled": false, "sameSubject": false, "otherFolders": true });
+    let changed = json!({ "senderPictures": false, "remoteImages": true, "switchToNewAccount": false, "theme": "Slate", "notifications": quiet, "conversations": grouping });
     let off = dispatch(&engine, "set_settings", json!({ "settings": changed })).await;
     assert_eq!(off, Ok(Value::Null));
     assert_eq!(
@@ -330,6 +331,17 @@ async fn settings_and_sender_pictures_go_under_the_names_the_ui_uses() {
         Ok(changed)
     );
     assert_eq!(ask().await, Ok(Value::Null));
+}
+
+#[tokio::test]
+async fn conversations_are_asked_for_under_the_names_the_ui_uses() {
+    let engine = engine();
+    let kind = |answer: Result<Value, Value>| answer.unwrap_err()["kind"].clone();
+
+    let listed = dispatch(&engine, "list_conversations", json!({ "folderId": 4 })).await;
+    assert_eq!(kind(listed), "NotFound");
+    let opened = dispatch(&engine, "conversation", json!({ "messageId": 9 })).await;
+    assert_eq!(kind(opened), "NotFound");
 }
 
 #[test]

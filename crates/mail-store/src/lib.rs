@@ -66,6 +66,14 @@ const SCHEMA_2: &str = "
     );
 ";
 
+// Added with conversations. Messages cached before have `threaded` 0: the
+// next sync fetches their reply headers.
+const SCHEMA_3: &str = "
+    ALTER TABLE messages ADD COLUMN message_id TEXT;
+    ALTER TABLE messages ADD COLUMN parents TEXT NOT NULL DEFAULT '[]';
+    ALTER TABLE messages ADD COLUMN threaded INTEGER NOT NULL DEFAULT 0;
+";
+
 /// What was found out about a sender domain's logo, and when.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CachedLogo {
@@ -86,6 +94,17 @@ pub struct NewMessage {
     pub date: i64,
     pub flags: MessageFlags,
     pub size: u32,
+    pub message_id: Option<String>,
+    /// The messages it answers (`In-Reply-To`, `References`).
+    pub parents: Vec<String>,
+}
+
+/// A cached message with what decides its conversation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Threaded {
+    pub summary: MessageSummary,
+    pub message_id: Option<String>,
+    pub parents: Vec<String>,
 }
 
 pub struct Store {
@@ -176,6 +195,12 @@ impl Store {
             connection.execute_batch(SCHEMA_2).map_err(storage)?;
             connection
                 .pragma_update(None, "user_version", 2)
+                .map_err(storage)?;
+        }
+        if version < 3 {
+            connection.execute_batch(SCHEMA_3).map_err(storage)?;
+            connection
+                .pragma_update(None, "user_version", 3)
                 .map_err(storage)?;
         }
 
@@ -392,12 +417,16 @@ impl Store {
         self.connection
             .execute(
                 "INSERT INTO messages
-                     (folder_id, uid, subject, sender, recipients, cc, date, seen, flagged, answered, size)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                     (folder_id, uid, subject, sender, recipients, cc, date, seen, flagged, answered, size,
+                      message_id, parents, threaded)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 1)
                  ON CONFLICT (folder_id, uid) DO UPDATE SET
                      seen = excluded.seen,
                      flagged = excluded.flagged,
-                     answered = excluded.answered",
+                     answered = excluded.answered,
+                     message_id = excluded.message_id,
+                     parents = excluded.parents,
+                     threaded = 1",
                 params![
                     folder_id,
                     message.uid,
@@ -410,6 +439,8 @@ impl Store {
                     message.flags.flagged,
                     message.flags.answered,
                     message.size,
+                    message.message_id,
+                    serde_json::to_string(&message.parents).map_err(json)?,
                 ],
             )
             .map_err(storage)?;
@@ -450,6 +481,42 @@ impl Store {
         let mut statement = self.connection.prepare(&sql).map_err(storage)?;
         let rows = statement
             .query_map(params![folder_id], summary_from_row)
+            .map_err(storage)?;
+
+        rows.collect::<rusqlite::Result<_>>().map_err(storage)
+    }
+
+    /// Cached messages of a folder with their reply headers, newest first.
+    pub fn threaded(&self, folder_id: i64) -> MailResult<Vec<Threaded>> {
+        let sql = format!(
+            "SELECT {SUMMARY_COLUMNS}, message_id, parents FROM messages
+             WHERE folder_id = ?1 ORDER BY uid DESC"
+        );
+        let mut statement = self.connection.prepare(&sql).map_err(storage)?;
+        let rows = statement
+            .query_map(params![folder_id], |row| {
+                let parents: String = row.get("parents")?;
+
+                Ok(Threaded {
+                    summary: summary_from_row(row)?,
+                    message_id: row.get("message_id")?,
+                    parents: serde_json::from_str(&parents).map_err(conversion)?,
+                })
+            })
+            .map_err(storage)?;
+
+        rows.collect::<rusqlite::Result<_>>().map_err(storage)
+    }
+
+    /// UIDs of the messages cached before their reply headers were kept,
+    /// ascending.
+    pub fn unthreaded_uids(&self, folder_id: i64) -> MailResult<Vec<u32>> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT uid FROM messages WHERE folder_id = ?1 AND threaded = 0 ORDER BY uid")
+            .map_err(storage)?;
+        let rows = statement
+            .query_map(params![folder_id], |row| row.get(0))
             .map_err(storage)?;
 
         rows.collect::<rusqlite::Result<_>>().map_err(storage)
@@ -615,6 +682,8 @@ mod tests {
             date: 1_700_000_000 + i64::from(uid),
             flags: MessageFlags::default(),
             size: 100,
+            message_id: Some(format!("{uid}@example.com")),
+            parents: Vec::new(),
         }
     }
 
@@ -771,6 +840,77 @@ mod tests {
 
         store.put_logo("revolut.com", None, 30).unwrap();
         assert_eq!(store.logo("revolut.com").unwrap().unwrap().svg, None);
+    }
+
+    #[test]
+    fn reply_headers_are_kept_and_filled_in_for_older_messages() {
+        let (store, inbox) = store_with_inbox();
+        let mut reply = new_message(2);
+        reply.parents = vec!["1@example.com".to_string()];
+        store.upsert_message(inbox.id, &new_message(1)).unwrap();
+        store.upsert_message(inbox.id, &reply).unwrap();
+
+        let threaded = store.threaded(inbox.id).unwrap();
+        assert_eq!(threaded[0].summary.uid, 2);
+        assert_eq!(threaded[0].message_id.as_deref(), Some("2@example.com"));
+        assert_eq!(threaded[0].parents, vec!["1@example.com"]);
+        assert_eq!(store.unthreaded_uids(inbox.id).unwrap(), Vec::<u32>::new());
+
+        // As a message cached before conversations existed.
+        store
+            .connection
+            .execute(
+                "UPDATE messages SET threaded = 0, parents = '[]' WHERE uid = 2",
+                [],
+            )
+            .unwrap();
+        assert_eq!(store.unthreaded_uids(inbox.id).unwrap(), vec![2]);
+        store.upsert_message(inbox.id, &reply).unwrap();
+        assert_eq!(store.unthreaded_uids(inbox.id).unwrap(), Vec::<u32>::new());
+        assert_eq!(
+            store.threaded(inbox.id).unwrap()[0].parents,
+            vec!["1@example.com"]
+        );
+    }
+
+    #[test]
+    fn a_database_from_before_conversations_keeps_its_messages_to_fill_in() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(SCHEMA).unwrap();
+        connection.execute_batch(SCHEMA_2).unwrap();
+        connection.pragma_update(None, "user_version", 2).unwrap();
+        connection
+            .execute(
+                "INSERT INTO accounts (settings) VALUES (?1)",
+                params![serde_json::to_string(&settings()).unwrap()],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO folders (account_id, path, name, depth, role, selectable, unread, total)
+                 VALUES (1, 'INBOX', 'INBOX', 0, '\"Inbox\"', 1, 0, 1)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO messages
+                     (folder_id, uid, subject, sender, recipients, cc, date, seen, flagged, answered, size, raw)
+                 VALUES (1, 7, 'Old', '[]', '[]', '[]', 0, 1, 0, 0, 10, x'6869')",
+                [],
+            )
+            .unwrap();
+
+        let store = Store::prepare(connection).unwrap();
+
+        assert_eq!(store.unthreaded_uids(1).unwrap(), vec![7]);
+        let threaded = store.threaded(1).unwrap();
+        assert_eq!(threaded[0].message_id, None);
+        assert_eq!(threaded[0].parents, Vec::<String>::new());
+        assert_eq!(
+            store.raw(threaded[0].summary.id).unwrap().as_deref(),
+            Some(&b"hi"[..])
+        );
     }
 
     #[test]

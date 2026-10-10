@@ -1,27 +1,45 @@
 <script lang="ts">
-    import type { Folder, MessageSummary } from '$lib/api'
+    import type { Conversation, Folder } from '$lib/api'
     import Avatar from '$lib/design/Avatar.svelte'
+    import { avatarTone } from '$lib/design/avatar'
     import Button from '$lib/design/Button.svelte'
     import Icon from '$lib/design/Icon.svelte'
     import { t } from '$lib/i18n'
-    import { folderIcon, folderLabel, senderLabel, senderPicture, shortDate, subjectLabel, type Pictures } from './workspace'
+    import { folderIcon, folderLabel, participantsLabel, senderLabel, senderPicture, shortDate, subjectLabel, type Pictures } from './workspace'
 
     type Props = {
         // The folder whose messages are listed.
         folder: Folder | null
-        messages: MessageSummary[]
+        // One row each: a conversation, or a message on its own.
+        conversations: Conversation[]
+        // The open message; its row is the selected one.
         selectedId: number | null
+        // The account's address, named "me" among the people of a conversation.
+        ownEmail: string
         pictures: Pictures
         // True when the server has older messages than the ones shown.
         hasMore: boolean
         busy: boolean
-        onselect: (message: MessageSummary) => void
-        onflag: (message: MessageSummary) => void
+        onselect: (conversation: Conversation) => void
+        onflag: (conversation: Conversation) => void
         onmore: () => void
         onrefresh: () => void
     }
 
-    let { folder, messages, selectedId, pictures, hasMore, busy, onselect, onflag, onmore, onrefresh }: Props = $props()
+    let { folder, conversations, selectedId, ownEmail, pictures, hasMore, busy, onselect, onflag, onmore, onrefresh }: Props = $props()
+
+    // The picture behind a conversation's picture has the colour of someone
+    // else who wrote in it, so the pile reads as more than one message.
+    const pileTone = (conversation: Conversation): string => {
+        const latest = conversation.latest.from[0]?.email.toLowerCase() ?? ''
+        const other = conversation.senders.find((sender) => sender.email.toLowerCase() !== latest)
+
+        return `var(--avatar-${avatarTone(other?.email ?? latest)})`
+    }
+
+    const isSelected = (conversation: Conversation): boolean => {
+        return selectedId !== null && conversation.messageIds.includes(selectedId)
+    }
 
     const now = new Date()
 </script>
@@ -48,36 +66,45 @@
     </header>
 
     <div class="rows">
-        {#if messages.length === 0}
+        {#if conversations.length === 0}
             <p class="empty">{busy ? t('app.loading') : t('list.empty')}</p>
         {:else}
             <ul aria-label={t('list.messages')}>
-                {#each messages as message (message.id)}
+                {#each conversations as conversation (conversation.latest.id)}
+                    {@const message = conversation.latest}
+                    {@const grouped = conversation.count > 1}
                     <li
                         class="row"
-                        class:selected={message.id === selectedId}
-                        class:unread={!message.flags.seen}
-                        class:flagged={message.flags.flagged}
+                        class:selected={isSelected(conversation)}
+                        class:unread={conversation.unread > 0}
+                        class:flagged={conversation.flagged}
                     >
                         <button
                             class="open"
                             type="button"
-                            aria-current={message.id === selectedId}
-                            onclick={() => onselect(message)}
+                            aria-current={isSelected(conversation)}
+                            onclick={() => onselect(conversation)}
                         >
                             <span class="mark">
-                                {#if !message.flags.seen}
+                                {#if conversation.unread > 0}
                                     <span class="dot" role="img" aria-label={t('list.unread')}></span>
                                 {/if}
                             </span>
-                            <Avatar
-                                name={senderLabel(message)}
-                                seed={message.from[0]?.email ?? ''}
-                                image={senderPicture(pictures, message)}
-                            />
+                            <!-- A conversation is a small pile: one picture with the edge of another behind it. -->
+                            <span class="picture" class:pile={grouped} style:--pile={grouped ? pileTone(conversation) : undefined}>
+                                <Avatar
+                                    name={senderLabel(message)}
+                                    seed={message.from[0]?.email ?? ''}
+                                    image={senderPicture(pictures, message)}
+                                />
+                            </span>
                             <span class="lines">
                                 <span class="top">
-                                    <span class="sender">{senderLabel(message)}</span>
+                                    <span class="sender">{participantsLabel(conversation, ownEmail)}</span>
+                                    {#if grouped}
+                                        <span class="count" aria-hidden="true">{conversation.count}</span>
+                                        <span class="hidden">{t('list.inConversation', { count: String(conversation.count) })}</span>
+                                    {/if}
                                     <span class="date">{shortDate(message.date, now)}</span>
                                 </span>
                                 <span class="subject">{subjectLabel(message)}</span>
@@ -86,12 +113,12 @@
                         <button
                             class="flag"
                             type="button"
-                            title={message.flags.flagged ? t('toolbar.unflag') : t('toolbar.flag')}
-                            aria-label={message.flags.flagged ? t('toolbar.unflag') : t('toolbar.flag')}
-                            aria-pressed={message.flags.flagged}
-                            onclick={() => onflag(message)}
+                            title={conversation.flagged ? t('toolbar.unflag') : t('toolbar.flag')}
+                            aria-label={conversation.flagged ? t('toolbar.unflag') : t('toolbar.flag')}
+                            aria-pressed={conversation.flagged}
+                            onclick={() => onflag(conversation)}
                         >
-                            <Icon name={message.flags.flagged ? 'flag' : 'flagOff'} size={16} />
+                            <Icon name={conversation.flagged ? 'flag' : 'flagOff'} size={16} />
                         </button>
                     </li>
                 {/each}
@@ -225,6 +252,44 @@
         border: 1px solid var(--badge-border);
         border-radius: 50%;
         background: var(--badge-face);
+    }
+
+    .picture {
+        position: relative;
+        flex: none;
+        display: grid;
+    }
+
+    .pile::before {
+        content: '';
+        position: absolute;
+        inset: calc(-1 * var(--space-1)) calc(-1 * var(--space-1)) var(--space-1) var(--space-1);
+        border: 1px solid var(--avatar-border);
+        border-radius: 50%;
+        background: var(--avatar-shine), var(--pile);
+        box-shadow: var(--avatar-glass);
+    }
+
+    .count {
+        flex: none;
+        padding: 0 var(--space-1);
+        border-radius: var(--radius-control);
+        background: var(--badge-quiet-face);
+        font-size: var(--font-size-small);
+        color: var(--text-muted);
+    }
+
+    .unread .count {
+        color: var(--text);
+        font-weight: 600;
+    }
+
+    .hidden {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip-path: inset(50%);
     }
 
     .lines {

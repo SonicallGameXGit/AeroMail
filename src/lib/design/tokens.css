@@ -195,6 +195,16 @@
     --brand-tile-border: rgba(0, 0, 0, 0.3);
     --brand-tile-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
     --brand-mark-shadow: 0 0.5px 0.5px rgba(0, 0, 0, 0.35);
+
+    /* Conversations: messages as bubbles on the sunken surface, the user's
+       own in a light accent tint. Solid, never glass: they hold text. */
+    --bubble-face: linear-gradient(180deg, #ffffff 0%, #f3f7fb 100%);
+    --bubble-border: #bccbdb;
+    --bubble-own-face: linear-gradient(180deg, #f0f8ff 0%, #d6ecfc 100%);
+    --bubble-own-border: #8bb9e0;
+    --bubble-shadow: 0 1px 3px rgba(8, 35, 70, 0.16);
+    --bubble-width: 78%;
+    --conversation-day-text: #55616f;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -268,6 +278,13 @@
         --badge-border: #06121d;
         --badge-quiet-face: rgba(255, 255, 255, 0.14);
         --danger-control-border: #2a0704;
+
+        --bubble-face: linear-gradient(180deg, #30373f 0%, #2a3037 100%);
+        --bubble-border: #11151a;
+        --bubble-own-face: linear-gradient(180deg, #33536f 0%, #2a455e 100%);
+        --bubble-own-border: #0a1622;
+        --bubble-shadow: 0 1px 3px rgba(0, 0, 0, 0.55);
+        --conversation-day-text: #a3adb8;
     }
 }
 
@@ -341,6 +358,13 @@
     --badge-border: #06121d;
     --badge-quiet-face: rgba(255, 255, 255, 0.14);
     --danger-control-border: #2a0704;
+
+    --bubble-face: linear-gradient(180deg, #30373f 0%, #2a3037 100%);
+    --bubble-border: #11151a;
+    --bubble-own-face: linear-gradient(180deg, #33536f 0%, #2a455e 100%);
+    --bubble-own-border: #0a1622;
+    --bubble-shadow: 0 1px 3px rgba(0, 0, 0, 0.55);
+    --conversation-day-text: #a3adb8;
 }
 
 /* Users who ask for less transparency get opaque chrome. */
