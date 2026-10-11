@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
+use mail_core::category::{Category, Signals, classify};
 use mail_core::error::{ErrorKind, MailError, MailResult};
 use mail_core::mail::{Attachment, Contact};
 use mail_parser::{Address, HeaderValue, Message, MessageParser, MessagePart, MimeHeaders};
@@ -21,6 +22,8 @@ pub struct HeaderInfo {
     /// The messages this one answers: `In-Reply-To`, then `References`,
     /// each id once.
     pub parents: Vec<String>,
+    /// The inbox tab the header points to (`mail_core::category`).
+    pub category: Category,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,6 +85,7 @@ pub fn parse_header(raw: &[u8]) -> HeaderInfo {
             date: None,
             message_id: None,
             parents: Vec::new(),
+            category: Category::Primary,
         };
     };
 
@@ -95,14 +99,50 @@ pub fn parse_header(raw: &[u8]) -> HeaderInfo {
         }
     }
 
+    let subject = message.subject().unwrap_or_default().trim().to_string();
+    let from = contacts(message.from());
+    let category = classify(&signals(&message, &subject, &from));
+
     HeaderInfo {
-        subject: message.subject().unwrap_or_default().trim().to_string(),
-        from: contacts(message.from()),
+        subject,
         to: contacts(message.to()),
         cc: contacts(message.cc()),
         date: message.date().map(|date| date.to_timestamp()),
         message_id: message.message_id().map(str::to_string),
         parents,
+        category,
+        from,
+    }
+}
+
+/// Headers marketing platforms put on their campaigns (Mailchimp, Brevo,
+/// Salesforce Marketing Cloud and the generic ones). Fetched with the list's
+/// header fields (`mail-protocols`), so a name added here is added there.
+const CAMPAIGN_HEADERS: [&str; 6] = [
+    "X-Campaign",
+    "X-CampaignID",
+    "X-Campaign-ID",
+    "X-MC-User",
+    "X-Mailin-Campaign",
+    "X-SFMC-Stack",
+];
+
+/// What the header says about where the message comes from.
+fn signals<'a>(message: &'a Message<'a>, subject: &'a str, from: &'a [Contact]) -> Signals<'a> {
+    let value = |name: &'static str| message.header_raw(name).map(str::trim);
+    let lower = |name: &'static str| value(name).map(str::to_ascii_lowercase);
+
+    Signals {
+        sender: from.first().map_or("", |sender| sender.email.as_str()),
+        subject,
+        list_id: value("List-Id").is_some(),
+        // "NO" says the list cannot be written to (RFC 2369).
+        list_post: value("List-Post").is_some_and(|post| !post.eq_ignore_ascii_case("no")),
+        list_unsubscribe: value("List-Unsubscribe").is_some(),
+        bulk: lower("Precedence")
+            .is_some_and(|precedence| matches!(precedence.as_str(), "bulk" | "junk")),
+        auto_submitted: lower("Auto-Submitted").is_some_and(|kind| kind != "no"),
+        campaign: CAMPAIGN_HEADERS.iter().any(|name| value(name).is_some()),
     }
 }
 
@@ -375,6 +415,36 @@ JVBERi0xLjQ=\r\n\
         assert_eq!(header.date, Some(1_700_000_000));
         assert_eq!(header.message_id.as_deref(), Some("m2@example.com"));
         assert_eq!(header.parents, vec!["m0@example.com", "m1@example.com"]);
+    }
+
+    #[test]
+    fn the_header_says_which_tab_a_message_belongs_in() {
+        assert_eq!(parse_header(PLAIN).category, Category::Primary);
+
+        let list = parse_header(
+            b"From: ann@example.com\r\nSubject: Borrowing\r\nList-Id: <rust.lists.example>\r\n\
+List-Post: <mailto:rust@lists.example>\r\n\r\n",
+        );
+        assert_eq!(list.category, Category::Forums);
+
+        let announcements = parse_header(
+            b"From: hello@shop.example\r\nSubject: New in\r\nList-Id: <shop>\r\nList-Post: NO\r\n\r\n",
+        );
+        assert_eq!(announcements.category, Category::Promotions);
+
+        let campaign =
+            parse_header(b"From: hello@shop.example\r\nSubject: Sale\r\nx-mc-user: 12ab\r\n\r\n");
+        assert_eq!(campaign.category, Category::Promotions);
+
+        let robot = parse_header(
+            b"From: ci@build.example\r\nSubject: Build done\r\nAuto-Submitted: auto-generated\r\n\r\n",
+        );
+        assert_eq!(robot.category, Category::Updates);
+
+        let person = parse_header(
+            b"From: ann@example.com\r\nSubject: Hi\r\nAuto-Submitted: no\r\nPrecedence: list\r\n\r\n",
+        );
+        assert_eq!(person.category, Category::Primary);
     }
 
     #[test]

@@ -169,6 +169,25 @@
         <path class="green" d="M11.5 3h8A2.5 2.5 0 0 1 22 5.5v4a2.5 2.5 0 0 1-2.5 2.5H19v2.5L16 12h-4.5A2.5 2.5 0 0 1 9 9.5v-4A2.5 2.5 0 0 1 11.5 3z" fill={green} />
         <path class="blue" d="M4.5 8.5h9A2.5 2.5 0 0 1 16 11v5a2.5 2.5 0 0 1-2.5 2.5H9l-3.5 3v-3h-1A2.5 2.5 0 0 1 2 16v-5a2.5 2.5 0 0 1 2.5-2.5z" fill={blue} />
         <path class="shine" d="M3.5 11a1.5 1.5 0 0 1 1.5-1.5h8a1.5 1.5 0 0 1 1.5 1.5v1.2c-3.5-1-7.5-1-11 0z" />
+    {:else if name === 'people'}
+        <path class="green" d="M11.5 19.5c0-3.9 2.6-6.5 5.75-6.5S23 15.6 23 19.5z" fill={green} />
+        <circle class="green" cx="17.25" cy="8.5" r="3.5" fill={green} />
+        <path class="blue" d="M1.5 21c0-4.4 3.1-7.5 7-7.5s7 3.1 7 7.5z" fill={blue} />
+        <circle class="blue" cx="8.5" cy="8.5" r="4" fill={blue} />
+        <path class="shine" d="M5.2 7.9a3.3 3.3 0 0 1 6.6 0 6 6 0 0 0-6.6 0z" />
+    {:else if name === 'tag'}
+        <path class="gold" d="M3 4.5A1.5 1.5 0 0 1 4.5 3h7.4a1.5 1.5 0 0 1 1.1.4l7.6 7.6a1.5 1.5 0 0 1 0 2.1l-7.4 7.4a1.5 1.5 0 0 1-2.1 0l-7.6-7.6a1.5 1.5 0 0 1-.4-1.1z" fill={gold} />
+        <path class="shine" d="M4.5 4.5h7.2l3.5 3.5c-4.2-1.2-7.8-.6-10.7 1.6z" />
+        <circle class="paper" cx="7.8" cy="7.8" r="1.8" fill={paper} />
+    {:else if name === 'info'}
+        <circle class="blue" cx="12" cy="12" r="9" fill={blue} />
+        <path class="shine" d="M5.2 10a7 7 0 0 1 13.6 0 12 12 0 0 0-13.6 0z" />
+        <path class="ink" d="M12 11v5.5M12 7.6v.2" />
+    {:else if name === 'tabs'}
+        <path class="paper" d="M15 4.5h4.5a1 1 0 0 1 1 1V8H14V5.5a1 1 0 0 1 1-1z" fill={paper} />
+        <path class="paper" d="M9.5 4.5h4a1 1 0 0 1 1 1V8h-6V5.5a1 1 0 0 1 1-1z" fill={paper} />
+        <path class="blue" d="M3 5.5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1V8h12v11.5a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 19.5z" fill={blue} />
+        <path class="shine" d="M4 9h16v3c-5-1.5-11-1.5-16 0z" />
     {:else if name === 'warning'}
         <path class="gold" d="M12 3 22 20.5H2z" fill={gold} />
         <path class="mark" d="M12 9.5v5M12 17.4v.2" />

@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest'
 import type { Account, Conversation, Folder, MessageSummary } from '$lib/api'
 import {
     answerTarget,
+    categoryUnread,
+    inCategory,
+    shownCategories,
     contactFull,
     dayLabel,
     emptyForm,
@@ -268,6 +271,7 @@ describe('conversations', () => {
             unread: 0,
             flagged: false,
             senders: [ann],
+            category: null,
             ...overrides,
         }
     }
@@ -304,5 +308,34 @@ describe('conversations', () => {
         expect(dayLabel(at(10), now)).toBe('Yesterday')
         expect(dayLabel(at(5), now, 'en-GB')).toBe('Monday 5 October')
         expect(dayLabel(at(5, 9, 2025), now, 'en-GB')).toBe('5 October 2025')
+    })
+})
+
+describe('inbox categories', () => {
+    const row = (id: number, category: Conversation['category'], unread: number): Conversation => {
+        return {
+            latest: message({ id }),
+            messageIds: [id],
+            count: 1,
+            unread,
+            flagged: false,
+            senders: [],
+            category,
+        }
+    }
+    const sorting = { enabled: true, social: true, promotions: false, updates: true, forums: false }
+
+    it('shows Primary first and only the categories that are turned on', () => {
+        expect(shownCategories(sorting)).toEqual(['Primary', 'Social', 'Updates'])
+        expect(shownCategories({ ...sorting, enabled: false })).toEqual([])
+    })
+
+    it('puts a row the core did not sort in Primary, and counts what is unread in each tab', () => {
+        const rows = [row(1, 'Social', 2), row(2, null, 1), row(3, 'Primary', 0), row(4, 'Social', 1)]
+
+        expect(inCategory(rows, 'Primary').map((entry) => entry.latest.id)).toEqual([2, 3])
+        expect(inCategory(rows, 'Social').map((entry) => entry.latest.id)).toEqual([1, 4])
+        expect(categoryUnread(rows, 'Social')).toBe(3)
+        expect(categoryUnread(rows, 'Updates')).toBe(0)
     })
 })

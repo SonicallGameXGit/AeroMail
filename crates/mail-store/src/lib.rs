@@ -3,10 +3,11 @@
 //!
 //! Secrets never come here; they live in the OS keychain.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use mail_core::account::AccountSettings;
+use mail_core::category::{Category, CategoryRule};
 use mail_core::error::{ErrorKind, MailError, MailResult};
 use mail_core::mail::{Account, Contact, Folder, FolderRole, MessageFlags, MessageSummary};
 use mail_core::transport::RemoteFolder;
@@ -74,6 +75,19 @@ const SCHEMA_3: &str = "
     ALTER TABLE messages ADD COLUMN threaded INTEGER NOT NULL DEFAULT 0;
 ";
 
+// Added with inbox categories. `threaded` now means "cached with every
+// header field the list uses": it is cleared, so the next sync of each
+// folder fetches the fields categories are decided by.
+const SCHEMA_4: &str = "
+    ALTER TABLE messages ADD COLUMN category TEXT;
+    UPDATE messages SET threaded = 0;
+
+    CREATE TABLE category_rules (
+        sender TEXT PRIMARY KEY,
+        category TEXT NOT NULL
+    );
+";
+
 /// What was found out about a sender domain's logo, and when.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CachedLogo {
@@ -97,14 +111,18 @@ pub struct NewMessage {
     pub message_id: Option<String>,
     /// The messages it answers (`In-Reply-To`, `References`).
     pub parents: Vec<String>,
+    /// The inbox tab its header points to.
+    pub category: Category,
 }
 
-/// A cached message with what decides its conversation.
+/// A cached message with what decides its conversation and its inbox tab.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Threaded {
     pub summary: MessageSummary,
     pub message_id: Option<String>,
     pub parents: Vec<String>,
+    /// Primary until the header fields it is decided by were fetched.
+    pub category: Category,
 }
 
 pub struct Store {
@@ -201,6 +219,12 @@ impl Store {
             connection.execute_batch(SCHEMA_3).map_err(storage)?;
             connection
                 .pragma_update(None, "user_version", 3)
+                .map_err(storage)?;
+        }
+        if version < 4 {
+            connection.execute_batch(SCHEMA_4).map_err(storage)?;
+            connection
+                .pragma_update(None, "user_version", 4)
                 .map_err(storage)?;
         }
 
@@ -418,14 +442,15 @@ impl Store {
             .execute(
                 "INSERT INTO messages
                      (folder_id, uid, subject, sender, recipients, cc, date, seen, flagged, answered, size,
-                      message_id, parents, threaded)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, 1)
+                      message_id, parents, category, threaded)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, 1)
                  ON CONFLICT (folder_id, uid) DO UPDATE SET
                      seen = excluded.seen,
                      flagged = excluded.flagged,
                      answered = excluded.answered,
                      message_id = excluded.message_id,
                      parents = excluded.parents,
+                     category = excluded.category,
                      threaded = 1",
                 params![
                     folder_id,
@@ -441,6 +466,7 @@ impl Store {
                     message.size,
                     message.message_id,
                     serde_json::to_string(&message.parents).map_err(json)?,
+                    message.category.as_str(),
                 ],
             )
             .map_err(storage)?;
@@ -486,21 +512,27 @@ impl Store {
         rows.collect::<rusqlite::Result<_>>().map_err(storage)
     }
 
-    /// Cached messages of a folder with their reply headers, newest first.
+    /// Cached messages of a folder with their reply headers and category,
+    /// newest first.
     pub fn threaded(&self, folder_id: i64) -> MailResult<Vec<Threaded>> {
         let sql = format!(
-            "SELECT {SUMMARY_COLUMNS}, message_id, parents FROM messages
+            "SELECT {SUMMARY_COLUMNS}, message_id, parents, category FROM messages
              WHERE folder_id = ?1 ORDER BY uid DESC"
         );
         let mut statement = self.connection.prepare(&sql).map_err(storage)?;
         let rows = statement
             .query_map(params![folder_id], |row| {
                 let parents: String = row.get("parents")?;
+                let category: Option<String> = row.get("category")?;
 
                 Ok(Threaded {
                     summary: summary_from_row(row)?,
                     message_id: row.get("message_id")?,
                     parents: serde_json::from_str(&parents).map_err(conversion)?,
+                    category: category
+                        .as_deref()
+                        .and_then(Category::parse)
+                        .unwrap_or(Category::Primary),
                 })
             })
             .map_err(storage)?;
@@ -508,9 +540,10 @@ impl Store {
         rows.collect::<rusqlite::Result<_>>().map_err(storage)
     }
 
-    /// UIDs of the messages cached before their reply headers were kept,
+    /// UIDs of the messages cached before every header field the list uses
+    /// was kept (reply headers, then what categories are decided by),
     /// ascending.
-    pub fn unthreaded_uids(&self, folder_id: i64) -> MailResult<Vec<u32>> {
+    pub fn outdated_uids(&self, folder_id: i64) -> MailResult<Vec<u32>> {
         let mut statement = self
             .connection
             .prepare("SELECT uid FROM messages WHERE folder_id = ?1 AND threaded = 0 ORDER BY uid")
@@ -601,6 +634,79 @@ impl Store {
         rows.collect::<Result<_, _>>().map_err(storage)
     }
 
+    /// Everyone the account wrote to, as far as its cached Sent shows: the
+    /// addresses (in small letters) its sent messages went to or copied.
+    pub fn correspondents(&self, account_id: i64) -> MailResult<HashSet<String>> {
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT recipients, cc FROM messages
+                 JOIN folders ON folders.id = messages.folder_id
+                 WHERE folders.account_id = ?1 AND folders.role = ?2",
+            )
+            .map_err(storage)?;
+        let rows = statement
+            .query_map(
+                params![account_id, role_to_text(FolderRole::Sent)?],
+                |row| Ok([contacts(row, "recipients")?, contacts(row, "cc")?]),
+            )
+            .map_err(storage)?;
+
+        let mut addresses = HashSet::new();
+        for row in rows {
+            for contact in row.map_err(storage)?.into_iter().flatten() {
+                addresses.insert(contact.email.trim().to_lowercase());
+            }
+        }
+
+        Ok(addresses)
+    }
+
+    // Category rules
+
+    /// The user's rules, by sender. A rule naming a category this version
+    /// does not know is left out.
+    pub fn category_rules(&self) -> MailResult<Vec<CategoryRule>> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT sender, category FROM category_rules ORDER BY sender")
+            .map_err(storage)?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(storage)?;
+
+        let mut rules = Vec::new();
+        for row in rows {
+            let (sender, category) = row.map_err(storage)?;
+            if let Some(category) = Category::parse(&category) {
+                rules.push(CategoryRule { sender, category });
+            }
+        }
+
+        Ok(rules)
+    }
+
+    /// Puts the sender's mail in `category` from now on; `None` forgets the
+    /// rule. `sender` is expected in small letters.
+    pub fn set_category_rule(&self, sender: &str, category: Option<Category>) -> MailResult<()> {
+        match category {
+            Some(category) => self.connection.execute(
+                "INSERT INTO category_rules (sender, category) VALUES (?1, ?2)
+                 ON CONFLICT (sender) DO UPDATE SET category = excluded.category",
+                params![sender, category.as_str()],
+            ),
+            None => self.connection.execute(
+                "DELETE FROM category_rules WHERE sender = ?1",
+                params![sender],
+            ),
+        }
+        .map_err(storage)?;
+
+        Ok(())
+    }
+
     // Sender pictures
 
     pub fn logo(&self, domain: &str) -> MailResult<Option<CachedLogo>> {
@@ -684,6 +790,7 @@ mod tests {
             size: 100,
             message_id: Some(format!("{uid}@example.com")),
             parents: Vec::new(),
+            category: Category::Primary,
         }
     }
 
@@ -854,7 +961,7 @@ mod tests {
         assert_eq!(threaded[0].summary.uid, 2);
         assert_eq!(threaded[0].message_id.as_deref(), Some("2@example.com"));
         assert_eq!(threaded[0].parents, vec!["1@example.com"]);
-        assert_eq!(store.unthreaded_uids(inbox.id).unwrap(), Vec::<u32>::new());
+        assert_eq!(store.outdated_uids(inbox.id).unwrap(), Vec::<u32>::new());
 
         // As a message cached before conversations existed.
         store
@@ -864,9 +971,9 @@ mod tests {
                 [],
             )
             .unwrap();
-        assert_eq!(store.unthreaded_uids(inbox.id).unwrap(), vec![2]);
+        assert_eq!(store.outdated_uids(inbox.id).unwrap(), vec![2]);
         store.upsert_message(inbox.id, &reply).unwrap();
-        assert_eq!(store.unthreaded_uids(inbox.id).unwrap(), Vec::<u32>::new());
+        assert_eq!(store.outdated_uids(inbox.id).unwrap(), Vec::<u32>::new());
         assert_eq!(
             store.threaded(inbox.id).unwrap()[0].parents,
             vec!["1@example.com"]
@@ -903,7 +1010,7 @@ mod tests {
 
         let store = Store::prepare(connection).unwrap();
 
-        assert_eq!(store.unthreaded_uids(1).unwrap(), vec![7]);
+        assert_eq!(store.outdated_uids(1).unwrap(), vec![7]);
         let threaded = store.threaded(1).unwrap();
         assert_eq!(threaded[0].message_id, None);
         assert_eq!(threaded[0].parents, Vec::<String>::new());
@@ -911,6 +1018,149 @@ mod tests {
             store.raw(threaded[0].summary.id).unwrap().as_deref(),
             Some(&b"hi"[..])
         );
+    }
+
+    #[test]
+    fn the_category_is_kept_and_updated_with_the_message() {
+        let (store, inbox) = store_with_inbox();
+        let mut offer = new_message(1);
+        offer.category = Category::Promotions;
+        store.upsert_message(inbox.id, &offer).unwrap();
+        assert_eq!(
+            store.threaded(inbox.id).unwrap()[0].category,
+            Category::Promotions
+        );
+
+        offer.category = Category::Updates;
+        store.upsert_message(inbox.id, &offer).unwrap();
+        assert_eq!(
+            store.threaded(inbox.id).unwrap()[0].category,
+            Category::Updates
+        );
+    }
+
+    #[test]
+    fn category_rules_are_kept_replaced_and_forgotten() {
+        let store = Store::open_in_memory().unwrap();
+        store
+            .set_category_rule("shop@example.com", Some(Category::Promotions))
+            .unwrap();
+        store
+            .set_category_rule("ann@example.com", Some(Category::Social))
+            .unwrap();
+        store
+            .set_category_rule("shop@example.com", Some(Category::Updates))
+            .unwrap();
+
+        let rule = |sender: &str, category| CategoryRule {
+            sender: sender.to_string(),
+            category,
+        };
+        assert_eq!(
+            store.category_rules().unwrap(),
+            vec![
+                rule("ann@example.com", Category::Social),
+                rule("shop@example.com", Category::Updates),
+            ]
+        );
+
+        store.set_category_rule("ann@example.com", None).unwrap();
+        store.set_category_rule("never@example.com", None).unwrap();
+        assert_eq!(
+            store.category_rules().unwrap(),
+            vec![rule("shop@example.com", Category::Updates)]
+        );
+    }
+
+    #[test]
+    fn correspondents_are_whoever_the_accounts_sent_mail_went_to() {
+        let mut store = Store::open_in_memory().unwrap();
+        let account = store.insert_account(&settings()).unwrap();
+        let other = store.insert_account(&settings()).unwrap();
+        store
+            .replace_folders(
+                account.id,
+                &[
+                    remote("INBOX", FolderRole::Inbox),
+                    remote("Sent", FolderRole::Sent),
+                ],
+            )
+            .unwrap();
+        store
+            .replace_folders(other.id, &[remote("Sent", FolderRole::Sent)])
+            .unwrap();
+        let folder = |id: i64, role| {
+            store
+                .folders(id)
+                .unwrap()
+                .into_iter()
+                .find(|folder| folder.role == role)
+                .unwrap()
+        };
+        let (inbox, sent, elsewhere) = (
+            folder(account.id, FolderRole::Inbox),
+            folder(account.id, FolderRole::Sent),
+            folder(other.id, FolderRole::Sent),
+        );
+        let to = |email: &str| Contact {
+            name: None,
+            email: email.to_string(),
+        };
+
+        let mut written = new_message(1);
+        written.to = vec![to("Ann@Example.com")];
+        written.cc = vec![to("bob@example.com")];
+        store.upsert_message(sent.id, &written).unwrap();
+        let mut received = new_message(2);
+        received.to = vec![to("cid@example.com")];
+        store.upsert_message(inbox.id, &received).unwrap();
+        let mut theirs = new_message(3);
+        theirs.to = vec![to("dan@example.com")];
+        store.upsert_message(elsewhere.id, &theirs).unwrap();
+
+        assert_eq!(
+            store.correspondents(account.id).unwrap(),
+            HashSet::from(["ann@example.com".to_string(), "bob@example.com".to_string()])
+        );
+    }
+
+    #[test]
+    fn a_database_from_before_categories_fetches_their_fields_again() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection.execute_batch(SCHEMA).unwrap();
+        connection.execute_batch(SCHEMA_2).unwrap();
+        connection.execute_batch(SCHEMA_3).unwrap();
+        connection.pragma_update(None, "user_version", 3).unwrap();
+        connection
+            .execute(
+                "INSERT INTO accounts (settings) VALUES (?1)",
+                params![serde_json::to_string(&settings()).unwrap()],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO folders (account_id, path, name, depth, role, selectable, unread, total)
+                 VALUES (1, 'INBOX', 'INBOX', 0, '\"Inbox\"', 1, 0, 1)",
+                [],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO messages
+                     (folder_id, uid, subject, sender, recipients, cc, date, seen, flagged, answered, size,
+                      message_id, parents, threaded)
+                 VALUES (1, 7, 'Old', '[]', '[]', '[]', 0, 1, 0, 0, 10, 'a@x', '[]', 1)",
+                [],
+            )
+            .unwrap();
+
+        let store = Store::prepare(connection).unwrap();
+
+        assert_eq!(store.outdated_uids(1).unwrap(), vec![7]);
+        let threaded = store.threaded(1).unwrap();
+        assert_eq!(threaded[0].category, Category::Primary);
+        assert_eq!(threaded[0].message_id.as_deref(), Some("a@x"));
+        assert_eq!(store.category_rules().unwrap(), Vec::new());
     }
 
     #[test]

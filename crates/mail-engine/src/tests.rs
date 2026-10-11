@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use mail_core::account::{AccountSettings, ServerRole};
+use mail_core::category::{Category, CategoryRule};
 use mail_core::draft::ReplyMode;
 use mail_core::error::ErrorKind;
 use mail_core::mail::{
@@ -1618,4 +1619,201 @@ async fn notification_settings_are_kept_and_nonsense_is_refused() {
     let error = world.engine.set_settings(wrong).unwrap_err();
     assert_eq!(error.kind, ErrorKind::Invalid);
     assert_eq!(world.engine.settings(), Ok(settings));
+}
+
+// Categories
+
+/// A message from `from` about `subject`, with `headers` (whole lines, each
+/// ending in CRLF) added to its header.
+fn mail_with(from: &str, subject: &str, headers: &str) -> Vec<u8> {
+    format!(
+        "From: {from}\r\nTo: me@example.com\r\nSubject: {subject}\r\n{headers}\
+         Date: 1 Oct 2026 10:00:00 +0000\r\nMessage-ID: <{subject}@x>\r\n\r\nText\r\n"
+    )
+    .into_bytes()
+}
+
+/// An inbox with one message for each category.
+async fn with_every_kind_of_mail() -> (World, Account) {
+    let (world, account) = with_account().await;
+    {
+        let mut remote = world.remote.lock().unwrap();
+        let mut deliver = |raw| remote.deliver_raw("INBOX", raw, true);
+        deliver(mail_with(ANN, "Lunch", ""));
+        deliver(mail_with(
+            "Facebook <notification@facebookmail.com>",
+            "Ann tagged you",
+            "",
+        ));
+        deliver(mail_with(
+            "Shop <hello@shop.example>",
+            "Autumn sale",
+            "List-Unsubscribe: <https://shop.example/u>\r\n",
+        ));
+        deliver(mail_with("Shop <hello@shop.example>", "Your receipt", ""));
+        deliver(mail_with(
+            "Bob <bob@example.com>",
+            "Borrowing",
+            "List-Id: <rust.lists.example>\r\nList-Post: <mailto:rust@lists.example>\r\n",
+        ));
+    }
+    let inbox = folder(&world, &account, FolderRole::Inbox);
+    world.engine.sync_folder(inbox.id, false).await.unwrap();
+
+    (world, account)
+}
+
+/// Each row of the folder's list: its subject and its tab.
+fn tabs(world: &World, folder: &Folder) -> Vec<(String, Option<Category>)> {
+    world
+        .engine
+        .list_conversations(folder.id)
+        .unwrap()
+        .into_iter()
+        .map(|row| (row.latest.subject, row.category))
+        .collect()
+}
+
+fn tab(subject: &str, category: Option<Category>) -> (String, Option<Category>) {
+    (subject.to_string(), category)
+}
+
+#[tokio::test]
+async fn the_inbox_is_sorted_into_the_categories_that_are_turned_on() {
+    let (world, account) = with_every_kind_of_mail().await;
+    let inbox = folder(&world, &account, FolderRole::Inbox);
+
+    // Updates and Forums are off at first: their mail stays in Primary.
+    assert_eq!(
+        tabs(&world, &inbox),
+        vec![
+            tab("Borrowing", Some(Category::Primary)),
+            tab("Your receipt", Some(Category::Primary)),
+            tab("Autumn sale", Some(Category::Promotions)),
+            tab("Ann tagged you", Some(Category::Social)),
+            tab("Lunch", Some(Category::Primary)),
+        ]
+    );
+
+    let mut settings = AppSettings::default();
+    settings.categories.updates = true;
+    settings.categories.forums = true;
+    world.engine.set_settings(settings.clone()).unwrap();
+    assert_eq!(
+        tabs(&world, &inbox)
+            .into_iter()
+            .map(|(_, category)| category)
+            .collect::<Vec<_>>(),
+        vec![
+            Some(Category::Forums),
+            Some(Category::Updates),
+            Some(Category::Promotions),
+            Some(Category::Social),
+            Some(Category::Primary),
+        ]
+    );
+
+    settings.categories.enabled = false;
+    world.engine.set_settings(settings).unwrap();
+    assert!(
+        tabs(&world, &inbox)
+            .iter()
+            .all(|(_, category)| category.is_none())
+    );
+}
+
+#[tokio::test]
+async fn only_the_inbox_is_sorted() {
+    let (world, account) = with_account().await;
+    world.remote.lock().unwrap().deliver_raw(
+        "Archive",
+        mail_with(
+            "Facebook <notification@facebookmail.com>",
+            "Ann tagged you",
+            "",
+        ),
+        true,
+    );
+    let archive = folder(&world, &account, FolderRole::Archive);
+    world.engine.sync_folder(archive.id, false).await.unwrap();
+
+    assert_eq!(tabs(&world, &archive), vec![tab("Ann tagged you", None)]);
+}
+
+#[tokio::test]
+async fn a_sender_the_user_put_in_a_category_stays_there() {
+    let (world, account) = with_every_kind_of_mail().await;
+    let inbox = folder(&world, &account, FolderRole::Inbox);
+    let category_of = |subject: &str| {
+        tabs(&world, &inbox)
+            .into_iter()
+            .find(|(listed, _)| listed == subject)
+            .and_then(|(_, category)| category)
+    };
+
+    world
+        .engine
+        .set_category_rule(" Hello@Shop.example ", Some(Category::Social))
+        .unwrap();
+    assert_eq!(category_of("Autumn sale"), Some(Category::Social));
+    assert_eq!(category_of("Your receipt"), Some(Category::Social));
+    assert_eq!(
+        world.engine.category_rules().unwrap(),
+        vec![CategoryRule {
+            sender: "hello@shop.example".to_string(),
+            category: Category::Social,
+        }]
+    );
+
+    // A rule for a category that is turned off still lands in Primary.
+    world
+        .engine
+        .set_category_rule("hello@shop.example", Some(Category::Forums))
+        .unwrap();
+    assert_eq!(category_of("Autumn sale"), Some(Category::Primary));
+
+    world
+        .engine
+        .set_category_rule("hello@shop.example", None)
+        .unwrap();
+    assert_eq!(category_of("Autumn sale"), Some(Category::Promotions));
+    assert_eq!(world.engine.category_rules().unwrap(), Vec::new());
+
+    let error = world
+        .engine
+        .set_category_rule("  ", Some(Category::Social))
+        .unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Invalid);
+}
+
+#[tokio::test]
+async fn mail_from_someone_the_user_wrote_to_stays_in_primary() {
+    let (world, account) = with_every_kind_of_mail().await;
+    let inbox = folder(&world, &account, FolderRole::Inbox);
+    world.remote.lock().unwrap().deliver_raw(
+        "Sent",
+        format!(
+            "From: {ME}\r\nTo: Shop <hello@shop.example>\r\nSubject: Refund\r\n\
+             Message-ID: <refund@x>\r\n\r\nHello\r\n"
+        )
+        .into_bytes(),
+        true,
+    );
+    let sent = folder(&world, &account, FolderRole::Sent);
+    world.engine.sync_folder(sent.id, false).await.unwrap();
+
+    let autumn = tabs(&world, &inbox)
+        .into_iter()
+        .find(|(subject, _)| subject == "Autumn sale");
+    assert_eq!(autumn, Some(tab("Autumn sale", Some(Category::Primary))));
+
+    // What the user decided still comes first.
+    world
+        .engine
+        .set_category_rule("hello@shop.example", Some(Category::Promotions))
+        .unwrap();
+    let autumn = tabs(&world, &inbox)
+        .into_iter()
+        .find(|(subject, _)| subject == "Autumn sale");
+    assert_eq!(autumn, Some(tab("Autumn sale", Some(Category::Promotions))));
 }

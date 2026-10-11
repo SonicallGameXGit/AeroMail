@@ -1,7 +1,7 @@
 <script lang="ts">
     import { onMount } from 'svelte'
     import { toMailError } from '$lib/api'
-    import type { Account, Api, AppSettings, Attachment, Conversation, ConversationSettings, Folder, MailError, MailEvent, MessageContent, MessageSummary, NotificationTarget, ReplyMode } from '$lib/api'
+    import type { Account, Api, AppSettings, Attachment, Category, CategoryRule, CategorySettings, Conversation, ConversationSettings, Folder, MailError, MailEvent, MessageContent, MessageSummary, NotificationTarget, ReplyMode } from '$lib/api'
     import Backdrop from '$lib/design/Backdrop.svelte'
     import Button from '$lib/design/Button.svelte'
     import GlassWindow from '$lib/design/GlassWindow.svelte'
@@ -33,7 +33,7 @@
     import MessageList from './MessageList.svelte'
     import Reader from './Reader.svelte'
     import Sidebar from './Sidebar.svelte'
-    import { answerTarget, emptyForm, errorMessage, formFromDraft, groupFolders, pictureKey, senderPicture, toOutgoing, type ComposeForm, type Pictures } from './workspace'
+    import { answerTarget, categoryUnread, emptyForm, errorMessage, formFromDraft, groupFolders, inCategory, pictureKey, senderPicture, shownCategories, toOutgoing, type ComposeForm, type Pictures } from './workspace'
 
     let { api }: { api: Api } = $props()
 
@@ -90,7 +90,17 @@
             sameSubject: false,
             otherFolders: false,
         },
+        categories: {
+            enabled: false,
+            social: false,
+            promotions: false,
+            updates: false,
+            forums: false,
+        },
     })
+    // The open tab of a sorted inbox, and the senders the user sorted by hand.
+    let category = $state<Category>('Primary')
+    let rules = $state<CategoryRule[]>([])
     let pictures = $state<Pictures>({})
     // Addresses already asked about, so a refreshed list asks nothing twice.
     // Not state on purpose: asking must not make the list ask again.
@@ -100,6 +110,17 @@
     let sendError = $state<MailError | null>(null)
 
     let selected = $derived(conversations.find((conversation) => selectedId !== null && conversation.messageIds.includes(selectedId)) ?? null)
+    // Only the inbox is sorted, and only while the setting says so.
+    let tabs = $derived.by(() => {
+        if (selectedFolder?.role !== 'Inbox') {
+            return []
+        }
+
+        return shownCategories(settings.categories).map((shown) => ({ category: shown, unread: categoryUnread(conversations, shown) }))
+    })
+    // A tab that was turned off is not open any more: its mail is in Primary.
+    let openCategory = $derived(tabs.some((tab) => tab.category === category) ? category : 'Primary')
+    let visible = $derived(tabs.length === 0 ? conversations : inCategory(conversations, openCategory))
     let account = $derived(accounts?.find((candidate) => candidate.id === accountId) ?? null)
     let accountFolders = $derived(accountId === null ? [] : folders[accountId] ?? [])
     let archiveFolder = $derived(accountFolders.find((folder) => folder.role === 'Archive' && folder.selectable) ?? null)
@@ -232,6 +253,11 @@
         return write
     }
 
+    const sameCategories = (a: CategorySettings, b: CategorySettings): boolean => {
+        return a.enabled === b.enabled && a.social === b.social && a.promotions === b.promotions
+            && a.updates === b.updates && a.forums === b.forums
+    }
+
     const sameGrouping = (a: ConversationSettings, b: ConversationSettings): boolean => {
         return a.enabled === b.enabled && a.sameSubject === b.sameSubject && a.otherFolders === b.otherFolders
     }
@@ -246,6 +272,7 @@
             && next.switchToNewAccount === before.switchToNewAccount
             && next.theme === before.theme
             && sameGrouping(next.conversations, before.conversations)
+            && sameCategories(next.categories, before.categories)
         if (onlyNotifications) {
             settings = next
         }
@@ -275,6 +302,11 @@
             }
         }
         // The list is grouped anew, and what was open is opened the new way.
+        if (!sameGrouping(next.conversations, before.conversations) || !sameCategories(next.categories, before.categories)) {
+            if (selectedFolder !== null) {
+                await reloadList(selectedFolder)
+            }
+        }
         if (!sameGrouping(next.conversations, before.conversations) && selectedFolder !== null) {
             await reloadList(selectedFolder)
             if (selected !== null) {
@@ -302,6 +334,7 @@
     const load = () => guard(async () => {
         try {
             settings = await api.settings()
+            rules = await api.categoryRules()
         } finally {
             themeKnown = true
         }
@@ -461,6 +494,29 @@
         const gone = selected
         await api.moveMessages(gone.messageIds, folderId)
         await leave(gone)
+    })
+
+    // Every message from the open conversation's sender goes to `next` from now
+    // on; null gives the sender back to the automatic rules.
+    const sortSender = (next: Category | null) => guard(async () => {
+        const sender = selected?.latest.from[0]?.email.trim().toLowerCase()
+        if (sender === undefined || selectedFolder === null) {
+            return
+        }
+        await api.setCategoryRule(sender, next)
+        rules = await api.categoryRules()
+        await reloadList(selectedFolder)
+        if (next !== null) {
+            category = next
+        }
+    })
+
+    const forgetRule = (sender: string) => guard(async () => {
+        await api.setCategoryRule(sender, null)
+        rules = await api.categoryRules()
+        if (selectedFolder !== null) {
+            await reloadList(selectedFolder)
+        }
     })
 
     const compose = () => {
@@ -749,7 +805,10 @@
                 <div class="pane list">
                     <MessageList
                         folder={selectedFolder}
-                        {conversations}
+                        conversations={visible}
+                        {tabs}
+                        category={openCategory}
+                        oncategory={(next) => category = next}
                         {selectedId}
                         ownEmail={account?.settings.email ?? ''}
                         {pictures}
@@ -813,6 +872,11 @@
                 flagged={conversation.flagged}
                 canArchive={archiveFolder !== null}
                 {moveTargets}
+                categories={tabs.map((tab) => tab.category)}
+                category={conversation.category}
+                sender={conversation.latest.from[0]?.email ?? ''}
+                sorted={rules.some((rule) => rule.sender === conversation.latest.from[0]?.email.trim().toLowerCase())}
+                oncategory={sortSender}
                 onreply={reply}
                 onarchive={() => archiveFolder !== null && moveTo(archiveFolder.id)}
                 onmove={moveTo}
@@ -833,6 +897,8 @@
                 onremove={(next) => removing = next}
                 onclose={() => settingsOpen = false}
                 onresetnotifications={resetNotifications}
+                {rules}
+                onforgetrule={forgetRule}
             />
         </Modal>
     {/if}

@@ -33,6 +33,14 @@ pub(crate) struct ImapSession {
     can_idle: bool,
 }
 
+/// The header fields of a message the list shows, groups by and sorts into
+/// inbox tabs by (`mail_render::parse_header`). Only these: whole header
+/// blocks are several times larger (signatures, routing) and were most of a
+/// sync.
+pub(crate) const LIST_FIELDS: &str = "SUBJECT FROM TO CC DATE MESSAGE-ID IN-REPLY-TO REFERENCES \
+     LIST-ID LIST-POST LIST-UNSUBSCRIBE PRECEDENCE AUTO-SUBMITTED \
+     X-CAMPAIGN X-CAMPAIGNID X-CAMPAIGN-ID X-MC-USER X-MAILIN-CAMPAIGN X-SFMC-STACK";
+
 /// Servers without IDLE are asked again this often.
 const POLL: Duration = Duration::from_secs(60);
 
@@ -262,15 +270,12 @@ impl ImapSession {
 
     /// What the message list shows of the messages in `set`, in one command.
     async fn fetch_summaries(&mut self, set: &str) -> MailResult<Vec<RemoteMessage>> {
-        // Only what the message list shows and groups by: whole header
-        // blocks are several times larger (signatures, routing) and were
-        // most of a sync.
+        let query = format!(
+            "(UID FLAGS RFC822.SIZE INTERNALDATE BODY.PEEK[HEADER.FIELDS ({LIST_FIELDS})])"
+        );
         let stream = self
             .live()?
-            .uid_fetch(
-                set,
-                "(UID FLAGS RFC822.SIZE INTERNALDATE BODY.PEEK[HEADER.FIELDS (SUBJECT FROM TO CC DATE MESSAGE-ID IN-REPLY-TO REFERENCES)])",
-            )
+            .uid_fetch(set, query)
             .await
             .map_err(imap_error)?;
         let fetched: Vec<Fetch> = stream.try_collect().await.map_err(imap_error)?;

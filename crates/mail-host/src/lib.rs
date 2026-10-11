@@ -6,6 +6,7 @@
 mod tests;
 
 use mail_core::account::{AccountSettings, Protocol, Security};
+use mail_core::category::Category;
 use mail_core::draft::ReplyMode;
 use mail_core::error::{ErrorKind, MailError};
 use mail_core::mail::{MailEvent, OutgoingMessage};
@@ -139,6 +140,12 @@ struct Save {
 #[derive(Deserialize)]
 struct NewSettings {
     settings: AppSettings,
+}
+
+#[derive(Deserialize)]
+struct CategoryChoice {
+    sender: String,
+    category: Option<Category>,
 }
 
 fn encode<T: Serialize>(value: &T) -> Value {
@@ -301,6 +308,13 @@ pub async fn dispatch(engine: &Engine, command: &str, params: Value) -> Result<V
         "sender_picture" => {
             let Email { email } = args(params)?;
             reply(engine.sender_picture(&email).await)
+        }
+        // Which senders the user put in which inbox tab; `category: null`
+        // gives a sender back to the rules.
+        "category_rules" => reply(engine.category_rules()),
+        "set_category_rule" => {
+            let CategoryChoice { sender, category } = args(params)?;
+            reply(engine.set_category_rule(&sender, category))
         }
         "settings" => reply(engine.settings()),
         "default_settings" => Ok(encode(&AppSettings::default())),

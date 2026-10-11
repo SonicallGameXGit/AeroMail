@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use crate::category::Category;
 use crate::error::{ErrorKind, MailError, MailResult};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -18,6 +19,34 @@ pub struct AppSettings {
     pub theme: Theme,
     pub notifications: NotificationSettings,
     pub conversations: ConversationSettings,
+    pub categories: CategorySettings,
+}
+
+/// How the inbox is sorted into tabs (`crate::category`). Primary is always
+/// there: it holds everything no other shown category takes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct CategorySettings {
+    /// Off: the inbox is one list, as it always was.
+    pub enabled: bool,
+    pub social: bool,
+    pub promotions: bool,
+    pub updates: bool,
+    pub forums: bool,
+}
+
+impl CategorySettings {
+    /// Whether the inbox has a tab for `category`.
+    pub fn shows(&self, category: Category) -> bool {
+        self.enabled
+            && match category {
+                Category::Primary => true,
+                Category::Social => self.social,
+                Category::Promotions => self.promotions,
+                Category::Updates => self.updates,
+                Category::Forums => self.forums,
+            }
+    }
 }
 
 /// How messages are gathered into conversations (`crate::conversation`).
@@ -116,6 +145,21 @@ impl Default for AppSettings {
             theme: Theme::System,
             notifications: NotificationSettings::default(),
             conversations: ConversationSettings::default(),
+            categories: CategorySettings::default(),
+        }
+    }
+}
+
+impl Default for CategorySettings {
+    /// Gmail's own choice for a new account: receipts and lists stay in
+    /// Primary until the user wants tabs for them.
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            social: true,
+            promotions: true,
+            updates: false,
+            forums: false,
         }
     }
 }
@@ -195,6 +239,7 @@ impl AppSettings {
         let default = Self::default();
         let base = &default.notifications;
         let grouping = &default.conversations;
+        let sorting = &default.categories;
         let switch = |name: &str, fallback: bool| match stored(name).as_deref() {
             Some("on") => true,
             Some("off") => false,
@@ -254,6 +299,13 @@ impl AppSettings {
                 same_subject: switch(SAME_SUBJECT, grouping.same_subject),
                 other_folders: switch(OTHER_FOLDERS, grouping.other_folders),
             },
+            categories: CategorySettings {
+                enabled: switch(CATEGORIES, sorting.enabled),
+                social: switch(SOCIAL, sorting.social),
+                promotions: switch(PROMOTIONS, sorting.promotions),
+                updates: switch(UPDATES, sorting.updates),
+                forums: switch(FORUMS, sorting.forums),
+            },
         }
     }
 
@@ -300,6 +352,11 @@ impl AppSettings {
             (CONVERSATIONS, switch(self.conversations.enabled)),
             (SAME_SUBJECT, switch(self.conversations.same_subject)),
             (OTHER_FOLDERS, switch(self.conversations.other_folders)),
+            (CATEGORIES, switch(self.categories.enabled)),
+            (SOCIAL, switch(self.categories.social)),
+            (PROMOTIONS, switch(self.categories.promotions)),
+            (UPDATES, switch(self.categories.updates)),
+            (FORUMS, switch(self.categories.forums)),
         ]
     }
 }
@@ -323,6 +380,11 @@ const CUSTOM_ICON: &str = "notification_custom_icon";
 const CONVERSATIONS: &str = "conversations";
 const SAME_SUBJECT: &str = "conversation_same_subject";
 const OTHER_FOLDERS: &str = "conversation_other_folders";
+const CATEGORIES: &str = "categories";
+const SOCIAL: &str = "category_social";
+const PROMOTIONS: &str = "category_promotions";
+const UPDATES: &str = "category_updates";
+const FORUMS: &str = "category_forums";
 
 #[cfg(test)]
 mod tests {
@@ -369,6 +431,13 @@ mod tests {
                 same_subject: false,
                 other_folders: false,
             },
+            categories: CategorySettings {
+                enabled: false,
+                social: false,
+                promotions: false,
+                updates: true,
+                forums: true,
+            },
         };
 
         assert_eq!(round_trip(&settings), settings);
@@ -388,6 +457,18 @@ mod tests {
         let read = AppSettings::from_stored(|name| stored.get(name).cloned());
 
         assert_eq!(read, AppSettings::default());
+    }
+
+    #[test]
+    fn primary_is_shown_only_while_the_inbox_is_sorted() {
+        let mut sorting = CategorySettings::default();
+        assert!(sorting.shows(Category::Primary));
+        assert!(sorting.shows(Category::Promotions));
+        assert!(!sorting.shows(Category::Forums));
+
+        sorting.enabled = false;
+        assert!(!sorting.shows(Category::Primary));
+        assert!(!sorting.shows(Category::Promotions));
     }
 
     #[test]

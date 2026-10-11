@@ -306,7 +306,7 @@ async fn settings_and_sender_pictures_go_under_the_names_the_ui_uses() {
     assert_eq!(
         dispatch(&engine, "settings", Value::Null).await,
         Ok(
-            json!({ "senderPictures": true, "remoteImages": false, "switchToNewAccount": true, "theme": "System", "notifications": notifications, "conversations": { "enabled": true, "sameSubject": true, "otherFolders": true } })
+            json!({ "senderPictures": true, "remoteImages": false, "switchToNewAccount": true, "theme": "System", "notifications": notifications, "conversations": { "enabled": true, "sameSubject": true, "otherFolders": true }, "categories": { "enabled": true, "social": true, "promotions": true, "updates": false, "forums": false } })
         )
     );
 
@@ -323,7 +323,8 @@ async fn settings_and_sender_pictures_go_under_the_names_the_ui_uses() {
         "customIcon": null,
     });
     let grouping = json!({ "enabled": false, "sameSubject": false, "otherFolders": true });
-    let changed = json!({ "senderPictures": false, "remoteImages": true, "switchToNewAccount": false, "theme": "Slate", "notifications": quiet, "conversations": grouping });
+    let sorting = json!({ "enabled": false, "social": false, "promotions": true, "updates": true, "forums": false });
+    let changed = json!({ "senderPictures": false, "remoteImages": true, "switchToNewAccount": false, "theme": "Slate", "notifications": quiet, "conversations": grouping, "categories": sorting });
     let off = dispatch(&engine, "set_settings", json!({ "settings": changed })).await;
     assert_eq!(off, Ok(Value::Null));
     assert_eq!(
@@ -342,6 +343,32 @@ async fn conversations_are_asked_for_under_the_names_the_ui_uses() {
     assert_eq!(kind(listed), "NotFound");
     let opened = dispatch(&engine, "conversation", json!({ "messageId": 9 })).await;
     assert_eq!(kind(opened), "NotFound");
+}
+
+#[tokio::test]
+async fn category_rules_go_under_the_names_the_ui_uses() {
+    let engine = engine();
+    let set = |category: Value| {
+        dispatch(
+            &engine,
+            "set_category_rule",
+            json!({ "sender": "Shop@example.com", "category": category }),
+        )
+    };
+
+    assert_eq!(set(json!("Updates")).await, Ok(Value::Null));
+    assert_eq!(
+        dispatch(&engine, "category_rules", Value::Null).await,
+        Ok(json!([{ "sender": "shop@example.com", "category": "Updates" }]))
+    );
+
+    assert_eq!(set(Value::Null).await, Ok(Value::Null));
+    assert_eq!(
+        dispatch(&engine, "category_rules", Value::Null).await,
+        Ok(json!([]))
+    );
+    let unknown = set(json!("Spam")).await.unwrap_err();
+    assert_eq!(unknown["kind"], "Invalid");
 }
 
 #[test]

@@ -17,6 +17,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD;
 use mail_core::account::{AccountSettings, AuthMethod, ServerRole, validate};
 use mail_core::address::EmailAddress;
+use mail_core::category::{Category, CategoryRule, decide};
 use mail_core::conversation::{Conversation, Thread, group};
 use mail_core::draft::{Draft, ReplyMode, reply_draft};
 use mail_core::error::{ErrorKind, MailError, MailResult};
@@ -231,6 +232,7 @@ fn to_new_message(remote: &RemoteMessage) -> NewMessage {
         size: remote.size,
         message_id: header.message_id,
         parents: header.parents,
+        category: header.category,
     }
 }
 
@@ -240,6 +242,8 @@ struct Gathered {
     own: Vec<MessageSummary>,
     /// Every message of it the app has, each once, in no particular order.
     shown: Vec<MessageSummary>,
+    /// What the header of its newest message here points to.
+    category: Category,
 }
 
 /// Folders a conversation may show messages from besides the one it is
@@ -258,8 +262,9 @@ fn by_date(messages: &mut [MessageSummary]) {
     messages.sort_by_key(|message| (message.date, message.id));
 }
 
-/// The row of the message list for a gathered conversation.
-fn list_row(gathered: Gathered) -> Option<Conversation> {
+/// The row of the message list for a gathered conversation, shown in the
+/// inbox tab `category` when the inbox is sorted.
+fn list_row(gathered: Gathered, category: Option<Category>) -> Option<Conversation> {
     let latest = gathered.own.first()?.clone();
     let count = |value: usize| u32::try_from(value).unwrap_or(u32::MAX);
 
@@ -289,6 +294,7 @@ fn list_row(gathered: Gathered) -> Option<Conversation> {
         flagged: gathered.own.iter().any(|message| message.flags.flagged),
         senders,
         latest,
+        category,
     })
 }
 
@@ -700,6 +706,7 @@ impl Engine {
                 .map(|message| Gathered {
                     own: vec![message.summary.clone()],
                     shown: vec![message.summary],
+                    category: message.category,
                 })
                 .collect());
         }
@@ -730,7 +737,8 @@ impl Engine {
         let groups = group(&threads, settings.same_subject);
 
         // A group is in ascending order and the folder's own messages come
-        // first, so a group with none of them starts past them.
+        // first, newest first, so a group with none of them starts past them
+        // and the first one of a group is its newest message here.
         let mut gathered = Vec::new();
         for positions in groups.iter().filter(|positions| positions[0] < own_count) {
             let mut own = Vec::new();
@@ -755,6 +763,7 @@ impl Engine {
                     .into_iter()
                     .map(|message| message.summary.clone())
                     .collect(),
+                category: all[positions[0]].category,
             });
         }
 
@@ -762,15 +771,65 @@ impl Engine {
     }
 
     /// The rows of a folder's message list, newest first, from the cache.
-    /// With conversations turned off every message is a row of its own.
+    /// With conversations turned off every message is a row of its own. In
+    /// a sorted inbox each row says which tab it belongs in.
     pub fn list_conversations(&self, folder_id: i64) -> MailResult<Vec<Conversation>> {
         let folder = self.db(|store| store.folder(folder_id))?;
+        let gathered = self.gather(&folder)?;
 
-        Ok(self
-            .gather(&folder)?
+        let sorting = self.settings()?.categories;
+        if folder.role != FolderRole::Inbox || !sorting.enabled {
+            return Ok(gathered
+                .into_iter()
+                .filter_map(|gathered| list_row(gathered, None))
+                .collect());
+        }
+
+        let rules: HashMap<String, Category> = self
+            .category_rules()?
             .into_iter()
-            .filter_map(list_row)
+            .map(|rule| (rule.sender, rule.category))
+            .collect();
+        let correspondents = self.db(|store| store.correspondents(folder.account_id))?;
+
+        Ok(gathered
+            .into_iter()
+            .filter_map(|gathered| {
+                let sender = gathered
+                    .own
+                    .first()
+                    .and_then(|latest| latest.from.first())
+                    .map(|sender| sender.email.trim().to_lowercase())
+                    .unwrap_or_default();
+                let category = decide(
+                    gathered.category,
+                    rules.get(&sender).copied(),
+                    correspondents.contains(&sender),
+                    &sorting,
+                );
+
+                list_row(gathered, Some(category))
+            })
             .collect())
+    }
+
+    // Categories
+
+    /// What the user decided about senders' categories, by sender.
+    pub fn category_rules(&self) -> MailResult<Vec<CategoryRule>> {
+        self.db(|store| store.category_rules())
+    }
+
+    /// Puts mail from `sender` in `category` from now on, whatever its
+    /// header says; `None` gives it back to the rules. Only in this app:
+    /// nothing changes on the server.
+    pub fn set_category_rule(&self, sender: &str, category: Option<Category>) -> MailResult<()> {
+        let sender = sender.trim().to_lowercase();
+        if sender.is_empty() {
+            return Err(invalid("the sender is empty"));
+        }
+
+        self.db(|store| store.set_category_rule(&sender, category))
     }
 
     /// Every message of the conversation `message_id` belongs to, as it is
@@ -831,14 +890,14 @@ impl Engine {
             .copied()
             .filter(|uid| cached.binary_search(uid).is_err())
             .collect();
-        // Cached before reply headers were kept: their headers are fetched
-        // again, which also brings their flags.
-        let unthreaded = self.db(|store| store.unthreaded_uids(folder_id))?;
+        // Cached before every header field the list uses was kept: their
+        // headers are fetched again, which also brings their flags.
+        let outdated = self.db(|store| store.outdated_uids(folder_id))?;
         let (refill, known): (Vec<u32>, Vec<u32>) = wanted
             .iter()
             .copied()
             .filter(|uid| cached.binary_search(uid).is_ok())
-            .partition(|uid| unthreaded.binary_search(uid).is_ok());
+            .partition(|uid| outdated.binary_search(uid).is_ok());
         let fetched: Vec<u32> = new.iter().chain(refill.iter()).copied().collect();
 
         let headers = if fetched.is_empty() {

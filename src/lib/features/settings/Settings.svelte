@@ -1,19 +1,19 @@
 <script lang="ts" module>
-    export type Category = 'accounts' | 'appearance' | 'conversations' | 'privacy' | 'notifications'
+    export type Category = 'accounts' | 'appearance' | 'conversations' | 'inbox' | 'privacy' | 'notifications'
 
     // The category opened last stays open the next time, while the app runs.
     let lastCategory: Category = 'accounts'
 </script>
 
 <script lang="ts">
-    import type { Account, AppSettings } from '$lib/api'
+    import type { Account, AppSettings, CategoryRule } from '$lib/api'
     import Avatar from '$lib/design/Avatar.svelte'
     import Button from '$lib/design/Button.svelte'
     import CheckField from '$lib/design/CheckField.svelte'
     import Icon from '$lib/design/Icon.svelte'
     import type { IconName } from '$lib/design/icons'
     import NotificationOptions from '$lib/features/notifications/NotificationOptions.svelte'
-    import { accountLabel } from '$lib/features/workspace/workspace'
+    import { accountLabel, categoryIcon, categorySwitches, optionalCategories } from '$lib/features/workspace/workspace'
     import ThemePicker from './ThemePicker.svelte'
     import { t } from '$lib/i18n'
 
@@ -26,14 +26,18 @@
         onremove: (account: Account) => void
         onclose: () => void
         onresetnotifications: () => void
+        // The senders the user put in an inbox tab by hand.
+        rules: CategoryRule[]
+        onforgetrule: (sender: string) => void
     }
 
-    let { accounts, settings, onchange, onadd, onremove, onclose, onresetnotifications }: Props = $props()
+    let { accounts, settings, onchange, onadd, onremove, onclose, onresetnotifications, rules, onforgetrule }: Props = $props()
 
     const categories: { id: Category, icon: IconName }[] = [
         { id: 'accounts', icon: 'account' },
         { id: 'appearance', icon: 'appearance' },
         { id: 'conversations', icon: 'conversation' },
+        { id: 'inbox', icon: 'tabs' },
         { id: 'privacy', icon: 'privacy' },
         { id: 'notifications', icon: 'bell' },
     ]
@@ -149,6 +153,48 @@
                         onchange={(otherFolders) => onchange({ ...settings, conversations: { ...grouping, otherFolders } })}
                     />
                 </div>
+            {/if}
+        {:else if category === 'inbox'}
+            {@const sorting = settings.categories}
+            <CheckField
+                label={t('settings.categoriesOn')}
+                hint={t('settings.categoriesOnHint')}
+                checked={sorting.enabled}
+                onchange={(enabled) => onchange({ ...settings, categories: { ...sorting, enabled } })}
+            />
+            {#if sorting.enabled}
+                <div class="nested">
+                    {#each optionalCategories as name (name)}
+                        {@const key = categorySwitches[name]}
+                        <CheckField
+                            label={t(`category.${name}`)}
+                            hint={t(`categoryHint.${name}`)}
+                            checked={sorting[key]}
+                            onchange={(on) => onchange({ ...settings, categories: { ...sorting, [key]: on } })}
+                        />
+                    {/each}
+                </div>
+                <h3>{t('settings.categoryRules')}</h3>
+                <p class="note">{t('settings.categoryRulesHint')}</p>
+                {#if rules.length === 0}
+                    <p class="note">{t('settings.categoryRulesEmpty')}</p>
+                {:else}
+                    <ul>
+                        {#each rules as rule (rule.sender)}
+                            <li>
+                                <Icon name={categoryIcon(rule.category)} size={18} />
+                                <span class="who">
+                                    <span class="name">{rule.sender}</span>
+                                    <span class="email">{t(`category.${rule.category}`)}</span>
+                                </span>
+                                <Button
+                                    label={`${t('settings.categoryRuleForget')}: ${rule.sender}`}
+                                    onclick={() => onforgetrule(rule.sender)}
+                                >{t('settings.categoryRuleForget')}</Button>
+                            </li>
+                        {/each}
+                    </ul>
+                {/if}
             {/if}
         {:else if category === 'privacy'}
             <CheckField
@@ -288,6 +334,16 @@
 
     .row {
         display: flex;
+    }
+
+    h3 {
+        font-size: var(--font-size-body);
+        font-weight: 600;
+    }
+
+    .note {
+        font-size: var(--font-size-small);
+        color: var(--text-muted);
     }
 
     .nested {

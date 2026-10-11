@@ -10,6 +10,8 @@ import type { AddressPreset } from './generated/AddressPreset'
 import type { AppSettings } from './generated/AppSettings'
 import type { Attachment } from './generated/Attachment'
 import type { Brand } from './generated/Brand'
+import type { Category } from './generated/Category'
+import type { CategoryRule } from './generated/CategoryRule'
 import type { Conversation } from './generated/Conversation'
 import type { Detection } from './generated/Detection'
 import type { Draft } from './generated/Draft'
@@ -39,6 +41,9 @@ export type { ColorScheme } from './bridge'
 export type { Attachment } from './generated/Attachment'
 export type { AuthMethod } from './generated/AuthMethod'
 export type { Brand } from './generated/Brand'
+export type { Category } from './generated/Category'
+export type { CategoryRule } from './generated/CategoryRule'
+export type { CategorySettings } from './generated/CategorySettings'
 export type { Contact } from './generated/Contact'
 export type { Conversation } from './generated/Conversation'
 export type { ConversationSettings } from './generated/ConversationSettings'
@@ -133,6 +138,12 @@ export type Api = {
     setSettings: (settings: AppSettings) => Promise<void>
     // What a fresh install has.
     defaultSettings: () => Promise<AppSettings>
+
+    // Which senders the user put in which inbox tab, by sender.
+    categoryRules: () => Promise<CategoryRule[]>
+    // Puts mail from `sender` in `category` from now on; null gives the
+    // sender back to the automatic rules.
+    setCategoryRule: (sender: string, category: Category | null) => Promise<void>
 
     // What the core finds out by itself, like new mail. Returns the function
     // that stops listening.
@@ -360,6 +371,9 @@ export const desktopApi: Api = {
     settings: () => call<AppSettings>('settings'),
     setSettings: (settings) => call<void>('set_settings', { settings }),
     defaultSettings: () => call<AppSettings>('default_settings'),
+
+    categoryRules: () => call<CategoryRule[]>('category_rules'),
+    setCategoryRule: (sender, category) => call<void>('set_category_rule', { sender, category }),
 
     onEvent: (listener) => {
         return bridge().onEvent((raw) => {

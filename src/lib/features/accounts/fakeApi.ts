@@ -6,6 +6,8 @@ import type {
     AccountSettings,
     Api,
     AppSettings,
+    Category,
+    CategoryRule,
     ColorScheme,
     Conversation,
     Detection,
@@ -108,6 +110,8 @@ export type FakeState = {
     pictures: Record<string, string>
     pictureRequests: string[]
     settings: AppSettings
+    // Senders the user sorted into an inbox tab by hand.
+    rules: CategoryRule[]
     // Messages whose content brings remote images.
     remoteMessages: number[]
     // System notifications that were asked for.
@@ -157,6 +161,13 @@ export const defaultSettings = (): AppSettings => {
             sameSubject: true,
             otherFolders: true,
         },
+        categories: {
+            enabled: true,
+            social: true,
+            promotions: true,
+            updates: false,
+            forums: false,
+        },
     }
 }
 
@@ -178,7 +189,7 @@ const folder = (id: number, accountId: number, name: string, role: FolderRole): 
     }
 }
 
-const message = (id: number, folderId: number, subject: string, sender: string, seen: boolean): MessageSummary => {
+export const message = (id: number, folderId: number, subject: string, sender: string, seen: boolean): MessageSummary => {
     return {
         id,
         folderId,
@@ -233,6 +244,7 @@ export const seededState = (): FakeState => {
         pictures: {},
         pictureRequests: [],
         settings: defaultSettings(),
+        rules: [],
         remoteMessages: [],
         notified: [],
         colorSchemes: [],
@@ -251,12 +263,28 @@ export const emptyState = (): FakeState => {
         pictures: {},
         pictureRequests: [],
         settings: defaultSettings(),
+        rules: [],
         remoteMessages: [],
         notified: [],
         colorSchemes: [],
         listeners: [],
         openListeners: [],
     }
+}
+
+// What the fake sorts by: the user's rule, else Promotions for a sender named
+// "Shop". The real rules are in the core.
+const categoryOf = (state: FakeState, latest: MessageSummary): Category => {
+    const sender = latest.from[0]?.email.toLowerCase() ?? ''
+    const chosen = state.rules.find((rule) => rule.sender === sender)?.category
+    const automatic: Category = sender.startsWith('shop@') ? 'Promotions' : 'Primary'
+    const picked = chosen ?? automatic
+    const shown = picked === 'Primary' || (picked === 'Promotions' && state.settings.categories.promotions)
+        || (picked === 'Social' && state.settings.categories.social)
+        || (picked === 'Updates' && state.settings.categories.updates)
+        || (picked === 'Forums' && state.settings.categories.forums)
+
+    return shown ? picked : 'Primary'
 }
 
 const counted = (state: FakeState, target: Folder): Folder => {
@@ -352,6 +380,9 @@ export const createFakeApi = (state: FakeState = emptyState(), overrides: Partia
                 .filter((sender, index, all) => all.findIndex((other) => other.email === sender.email) === index)
 
             return [{
+                category: state.settings.categories.enabled && state.folders.find((candidate) => candidate.id === folderId)?.role === 'Inbox'
+                    ? categoryOf(state, latest)
+                    : null,
                 latest,
                 messageIds: group.own.map((candidate) => candidate.id),
                 count: group.shown.length,
@@ -553,6 +584,11 @@ export const createFakeApi = (state: FakeState = emptyState(), overrides: Partia
             state.settings = settings
         },
         defaultSettings: async () => defaultSettings(),
+        categoryRules: async () => state.rules,
+        setCategoryRule: async (sender: string, category: Category | null) => {
+            const others = state.rules.filter((rule) => rule.sender !== sender)
+            state.rules = category === null ? others : [...others, { sender, category }]
+        },
 
         onEvent: (listener) => {
             state.listeners = [...state.listeners, listener]

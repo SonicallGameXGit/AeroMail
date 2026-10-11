@@ -1,6 +1,6 @@
 // Presentation helpers of the workspace. No mail rules live here.
 
-import type { Account, Contact, Conversation, Draft, Folder, FolderRole, MailError, MessageSummary, OutgoingMessage } from '$lib/api'
+import type { Account, Category, CategorySettings, Contact, Conversation, Draft, Folder, FolderRole, MailError, MessageSummary, OutgoingMessage } from '$lib/api'
 import type { IconName } from '$lib/design/icons'
 import { t } from '$lib/i18n'
 
@@ -76,6 +76,56 @@ export const groupFolders = (folders: Folder[]): FolderGroups => {
     }
 
     return { main, custom }
+}
+
+// Which picture stands for an inbox category, as Gmail draws them.
+export const categoryIcon = (category: Category): IconName => {
+    const icons: Record<Category, IconName> = {
+        Primary: 'inbox',
+        Social: 'people',
+        Promotions: 'tag',
+        Updates: 'info',
+        Forums: 'conversation',
+    }
+
+    return icons[category]
+}
+
+// The switch of each category that can be turned off, in the order of
+// the tabs; Primary cannot be turned off.
+export const categorySwitches = {
+    Social: 'social',
+    Promotions: 'promotions',
+    Updates: 'updates',
+    Forums: 'forums',
+} as const satisfies Partial<Record<Category, keyof CategorySettings>>
+
+export type OptionalCategory = keyof typeof categorySwitches
+
+export const optionalCategories: OptionalCategory[] = [
+    'Social',
+    'Promotions',
+    'Updates',
+    'Forums',
+]
+
+// The tabs of a sorted inbox, Primary first; none while it is not sorted.
+export const shownCategories = (settings: CategorySettings): Category[] => {
+    if (!settings.enabled) {
+        return []
+    }
+
+    return ['Primary', ...optionalCategories.filter((category) => settings[categorySwitches[category]])]
+}
+
+// The rows a tab shows. The core puts every row of a sorted inbox in a
+// shown category; a row it did not sort belongs in Primary.
+export const inCategory = (conversations: Conversation[], category: Category): Conversation[] => {
+    return conversations.filter((conversation) => (conversation.category ?? 'Primary') === category)
+}
+
+export const categoryUnread = (conversations: Conversation[], category: Category): number => {
+    return inCategory(conversations, category).reduce((sum, conversation) => sum + conversation.unread, 0)
 }
 
 export const inboxUnread = (folders: Folder[]): number => {

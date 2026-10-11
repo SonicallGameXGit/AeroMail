@@ -8,6 +8,8 @@ use base64::engine::general_purpose::STANDARD;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 
+use crate::imap::LIST_FIELDS;
+
 // base64 of "\0me@example.com\0secret", the AUTH PLAIN form of the test login.
 const SMTP_PLAIN_OK: &str = "AG1lQGV4YW1wbGUuY29tAHNlY3JldA==";
 
@@ -126,13 +128,14 @@ async fn serve_imap(stream: TcpStream, log: Arc<Mutex<ImapLog>>) {
             }
         } else if upper.starts_with("UID FETCH") {
             let date = "INTERNALDATE \"14-Nov-2023 22:13:20 +0000\"";
-            if upper.contains("BODY.PEEK[HEADER.FIELDS (SUBJECT FROM TO CC DATE MESSAGE-ID IN-REPLY-TO REFERENCES)]") {
+            let fields = format!("BODY.PEEK[HEADER.FIELDS ({LIST_FIELDS})]");
+            if upper.contains(&fields) {
                 untagged.push_str(&format!(
-                    "* 1 FETCH (UID 5 FLAGS (\\Seen) RFC822.SIZE 120 {date} BODY[HEADER.FIELDS (SUBJECT FROM TO CC DATE MESSAGE-ID IN-REPLY-TO REFERENCES)] {})\r\n",
+                    "* 1 FETCH (UID 5 FLAGS (\\Seen) RFC822.SIZE 120 {date} BODY[HEADER.FIELDS ({LIST_FIELDS})] {})\r\n",
                     literal("Subject: First\r\n\r\n"),
                 ));
                 untagged.push_str(&format!(
-                    "* 2 FETCH (UID 9 FLAGS (\\Flagged) RFC822.SIZE 80 {date} BODY[HEADER.FIELDS (SUBJECT FROM TO CC DATE MESSAGE-ID IN-REPLY-TO REFERENCES)] {})\r\n",
+                    "* 2 FETCH (UID 9 FLAGS (\\Flagged) RFC822.SIZE 80 {date} BODY[HEADER.FIELDS ({LIST_FIELDS})] {})\r\n",
                     literal("Subject: Second\r\n\r\n"),
                 ));
             } else if upper.contains("BODY.PEEK[]") {

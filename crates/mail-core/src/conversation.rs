@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use serde::Serialize;
 use ts_rs::TS;
 
+use crate::category::Category;
 use crate::mail::{Contact, MessageSummary};
 
 /// One row of the message list: a conversation, or a single message when
@@ -37,6 +38,9 @@ pub struct Conversation {
     pub flagged: bool,
     /// Who wrote in it, each once, in the order they first wrote.
     pub senders: Vec<Contact>,
+    /// The inbox tab it is shown in, decided by its newest message here;
+    /// `None` outside the inbox or while the inbox is not sorted.
+    pub category: Option<Category>,
 }
 
 /// What a message says about where it belongs.

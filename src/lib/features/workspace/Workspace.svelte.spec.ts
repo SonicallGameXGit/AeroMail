@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { page, userEvent } from 'vitest/browser'
 import { render } from 'vitest-browser-svelte'
-import { announce, clickNotification, createFakeApi, defaultSettings, emptyState, fakePassword, guessDetection, seededState, withConversation } from '$lib/features/accounts/fakeApi'
+import { announce, clickNotification, createFakeApi, defaultSettings, emptyState, fakePassword, guessDetection, message, seededState, withConversation } from '$lib/features/accounts/fakeApi'
 import '$lib/design/base.css'
 import Workspace from './Workspace.svelte'
 
@@ -19,7 +19,7 @@ const pixel = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUw
 const pictureOf = (subject: string) => row(subject).element().querySelector('img')
 const toolbar = () => page.getByRole('toolbar', { name: 'Message actions' })
 // The window remembers the category opened last, so each test names its own.
-const openSettings = async (category: 'Accounts' | 'Appearance' | 'Conversations' | 'Privacy' | 'Notifications' = 'Accounts') => {
+const openSettings = async (category: 'Accounts' | 'Appearance' | 'Conversations' | 'Inbox' | 'Privacy' | 'Notifications' = 'Accounts') => {
     await page.getByRole('button', { name: /^Account: / }).click()
     await page.getByRole('menuitem', { name: 'Settings' }).click()
     await page.getByRole('tab', { name: category }).click()
@@ -41,6 +41,14 @@ const addCorpAccount = async () => {
     await page.getByRole('button', { name: 'Continue' }).click()
     await page.getByLabelText('Password', { exact: true }).fill(fakePassword)
     await page.getByRole('button', { name: 'Connect' }).click()
+}
+
+// An inbox message from a shop, which the fake sorts into Promotions.
+const withShopMail = (state: ReturnType<typeof seededState>) => {
+    const sale = { ...message(20, 1, 'Autumn sale', 'Shop', false), from: [{ name: 'Shop', email: 'shop@example.com' }] }
+    state.messages = [sale, ...state.messages]
+
+    return state
 }
 
 describe('Workspace', () => {
@@ -768,5 +776,48 @@ describe('Workspace', () => {
         await row('Re: Lunch on Friday?').click()
         await expect.element(page.getByRole('heading', { name: 'Re: Lunch on Friday?' })).toBeInTheDocument()
         await expect.element(timeline()).not.toBeInTheDocument()
+    })
+
+    it('sorts the inbox into tabs and moves a sender to another tab', async () => {
+        const state = withShopMail(seededState())
+        render(Workspace, { api: createFakeApi(state) })
+
+        const tab = (name: string | RegExp) => page.getByRole('tab', { name })
+        await expect.element(tab(/^Primary/)).toHaveAttribute('aria-selected', 'true')
+        await expect.element(row('Lunch on Friday?')).toBeInTheDocument()
+        await expect.element(row('Autumn sale')).not.toBeInTheDocument()
+        // Turned off in the settings, Updates and Forums have no tab.
+        await expect.element(tab('Updates')).not.toBeInTheDocument()
+
+        await tab(/^Promotions/).click()
+        await expect.element(row('Autumn sale')).toBeInTheDocument()
+        await expect.element(row('Lunch on Friday?')).not.toBeInTheDocument()
+
+        // The keyboard walks the tabs.
+        await userEvent.keyboard('{ArrowLeft}')
+        await expect.element(tab('Social')).toHaveAttribute('aria-selected', 'true')
+
+        await tab(/^Promotions/).click()
+        await row('Autumn sale').click()
+        await page.getByRole('button', { name: 'Move to category…' }).click()
+        await page.getByRole('menuitem', { name: 'Social' }).click()
+
+        await expect.poll(() => state.rules).toEqual([{ sender: 'shop@example.com', category: 'Social' }])
+        await expect.element(tab('Social')).toHaveAttribute('aria-selected', 'true')
+        await expect.element(row('Autumn sale')).toBeInTheDocument()
+    })
+
+    it('shows the whole inbox in one list when categories are turned off', async () => {
+        const state = withShopMail(seededState())
+        render(Workspace, { api: createFakeApi(state) })
+        await expect.element(page.getByRole('tab', { name: /^Primary/ })).toBeInTheDocument()
+
+        await openSettings('Inbox')
+        await settings().getByRole('checkbox', { name: 'Sort the inbox into categories' }).click()
+
+        expect(state.settings.categories.enabled).toBe(false)
+        await expect.element(page.getByRole('tab', { name: /^Primary/ })).not.toBeInTheDocument()
+        await expect.element(row('Autumn sale')).toBeInTheDocument()
+        await expect.element(row('Lunch on Friday?')).toBeInTheDocument()
     })
 })

@@ -4,6 +4,7 @@
 
 pub mod account;
 pub mod address;
+pub mod category;
 pub mod conversation;
 pub mod draft;
 pub mod error;
