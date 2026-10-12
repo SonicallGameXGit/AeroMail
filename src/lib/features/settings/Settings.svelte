@@ -6,12 +6,13 @@
 </script>
 
 <script lang="ts">
-    import type { Account, AppSettings, CategoryRule } from '$lib/api'
+    import type { Account, AppSettings, CategoryRule, ReaderLayout } from '$lib/api'
     import Avatar from '$lib/design/Avatar.svelte'
     import Button from '$lib/design/Button.svelte'
     import CheckField from '$lib/design/CheckField.svelte'
     import Icon from '$lib/design/Icon.svelte'
     import type { IconName } from '$lib/design/icons'
+    import SelectField from '$lib/design/SelectField.svelte'
     import NotificationOptions from '$lib/features/notifications/NotificationOptions.svelte'
     import { accountLabel, categoryIcon, categorySwitches, optionalCategories } from '$lib/features/workspace/workspace'
     import ThemePicker from './ThemePicker.svelte'
@@ -40,6 +41,11 @@
         { id: 'inbox', icon: 'tabs' },
         { id: 'privacy', icon: 'privacy' },
         { id: 'notifications', icon: 'bell' },
+    ]
+
+    const readerLayouts: ReaderLayout[] = [
+        'Beside',
+        'Full',
     ]
 
     let category = $state<Category>(lastCategory)
@@ -129,6 +135,12 @@
             />
         {:else if category === 'appearance'}
             <ThemePicker theme={settings.theme} onchange={(theme) => onchange({ ...settings, theme })} />
+            <SelectField
+                label={t('settings.reader')}
+                value={settings.reader}
+                options={readerLayouts.map((layout) => ({ value: layout, label: t(`reader.${layout}`) }))}
+                onchange={(reader) => onchange({ ...settings, reader })}
+            />
         {:else if category === 'conversations'}
             {@const grouping = settings.conversations}
             <CheckField

@@ -23,10 +23,12 @@ import type { MailEvent } from './generated/MailEvent'
 import type { NewMailItem } from './generated/NewMailItem'
 import type { MessageContent } from './generated/MessageContent'
 import type { MessageSummary } from './generated/MessageSummary'
+import type { Moved } from './generated/Moved'
 import type { OutgoingMessage } from './generated/OutgoingMessage'
 import type { Protocol } from './generated/Protocol'
 import type { ProviderChoice } from './generated/ProviderChoice'
 import type { ReplyMode } from './generated/ReplyMode'
+import type { Restored } from './generated/Restored'
 import type { Security } from './generated/Security'
 import type { SettingsIssue } from './generated/SettingsIssue'
 import type { SignIn } from './generated/SignIn'
@@ -64,11 +66,15 @@ export type { NotificationSettings } from './generated/NotificationSettings'
 export type { MessageContent } from './generated/MessageContent'
 export type { MessageFlags } from './generated/MessageFlags'
 export type { MessageSummary } from './generated/MessageSummary'
+export type { Moved } from './generated/Moved'
+export type { MovedMessage } from './generated/MovedMessage'
 export type { OutgoingMessage } from './generated/OutgoingMessage'
 export type { PasswordKind } from './generated/PasswordKind'
 export type { Protocol } from './generated/Protocol'
 export type { ProviderChoice } from './generated/ProviderChoice'
+export type { ReaderLayout } from './generated/ReaderLayout'
 export type { ReplyMode } from './generated/ReplyMode'
+export type { Restored } from './generated/Restored'
 export type { Security } from './generated/Security'
 export type { ServerRole } from './generated/ServerRole'
 export type { ServerSettings } from './generated/ServerSettings'
@@ -118,10 +124,15 @@ export type Api = {
     conversation: (messageId: number) => Promise<MessageSummary[]>
     syncFolder: (folderId: number, grow: boolean) => Promise<MessageSummary[]>
     openMessage: (messageId: number, allowRemote: boolean) => Promise<MessageContent>
-    setSeen: (messageIds: number[], seen: boolean) => Promise<void>
-    setFlagged: (messageIds: number[], flagged: boolean) => Promise<void>
-    deleteMessages: (messageIds: number[]) => Promise<void>
-    moveMessages: (messageIds: number[], folderId: number) => Promise<void>
+    // Both resolve to the messages they changed: undoing changes back only those.
+    setSeen: (messageIds: number[], seen: boolean) => Promise<number[]>
+    setFlagged: (messageIds: number[], flagged: boolean) => Promise<number[]>
+    // Both resolve to what `putBack` needs to undo them.
+    deleteMessages: (messageIds: number[]) => Promise<Moved[]>
+    moveMessages: (messageIds: number[], folderId: number) => Promise<Moved[]>
+    // Puts moved or deleted messages back where they were; resolves to the
+    // new ids of the ones that came back.
+    putBack: (moves: Moved[]) => Promise<Restored[]>
 
     replyDraft: (messageId: number, mode: ReplyMode) => Promise<Draft>
     sendMessage: (message: OutgoingMessage) => Promise<void>
@@ -351,10 +362,11 @@ export const desktopApi: Api = {
     conversation: (messageId) => call<MessageSummary[]>('conversation', { messageId }),
     syncFolder: (folderId, grow) => call<MessageSummary[]>('sync_folder', { folderId, grow }),
     openMessage: (messageId, allowRemote) => call<MessageContent>('open_message', { messageId, allowRemote }),
-    setSeen: (messageIds, seen) => call<void>('set_seen', { messageIds, seen }),
-    setFlagged: (messageIds, flagged) => call<void>('set_flagged', { messageIds, flagged }),
-    deleteMessages: (messageIds) => call<void>('delete_messages', { messageIds }),
-    moveMessages: (messageIds, folderId) => call<void>('move_messages', { messageIds, folderId }),
+    setSeen: (messageIds, seen) => call<number[]>('set_seen', { messageIds, seen }),
+    setFlagged: (messageIds, flagged) => call<number[]>('set_flagged', { messageIds, flagged }),
+    deleteMessages: (messageIds) => call<Moved[]>('delete_messages', { messageIds }),
+    moveMessages: (messageIds, folderId) => call<Moved[]>('move_messages', { messageIds, folderId }),
+    putBack: (moves) => call<Restored[]>('put_back', { moves }),
 
     replyDraft: (messageId, mode) => call<Draft>('reply_draft', { messageId, mode }),
     sendMessage: (message) => call<void>('send_message', { message }),

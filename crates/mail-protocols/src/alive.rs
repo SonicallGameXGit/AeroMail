@@ -111,6 +111,20 @@ impl<S: IncomingSession> IncomingSession for Trusted<S> {
         self.noted(result)
     }
 
+    async fn copy_messages(&mut self, folder: &str, uids: &[u32], target: &str) -> MailResult<()> {
+        let result = self.session.copy_messages(folder, uids, target).await;
+        self.noted(result)
+    }
+
+    async fn find_messages(
+        &mut self,
+        folder: &str,
+        message_ids: &[String],
+    ) -> MailResult<Vec<u32>> {
+        let result = self.session.find_messages(folder, message_ids).await;
+        self.noted(result)
+    }
+
     async fn delete_messages(&mut self, folder: &str, uids: &[u32]) -> MailResult<()> {
         let result = self.session.delete_messages(folder, uids).await;
         self.noted(result)

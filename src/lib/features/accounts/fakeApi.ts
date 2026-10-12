@@ -19,6 +19,7 @@ import type {
     NotificationTarget,
     MessageContent,
     MessageSummary,
+    Moved,
     OutgoingMessage,
     SettingsIssue,
 } from '$lib/api'
@@ -144,6 +145,7 @@ export const defaultSettings = (): AppSettings => {
         remoteImages: false,
         switchToNewAccount: true,
         theme: 'System',
+        reader: 'Beside',
         notifications: {
             enabled: true,
             sound: true,
@@ -310,6 +312,21 @@ const move = (state: FakeState, messageIds: number[], folderId: number) => {
     state.messages = state.messages.map((candidate) => {
         return messageIds.includes(candidate.id) ? { ...candidate, folderId } : candidate
     })
+}
+
+// What the core answers a move with: one entry per folder the messages left.
+const moved = (state: FakeState, messageIds: number[], folderId: number | null): Moved[] => {
+    const taken = state.messages.filter((candidate) => messageIds.includes(candidate.id))
+    const from = [...new Set(taken.map((candidate) => candidate.folderId))]
+
+    return from.map((fromFolderId) => ({
+        fromFolderId,
+        toFolderId: folderId,
+        kept: false,
+        messages: taken
+            .filter((candidate) => candidate.folderId === fromFolderId)
+            .map((candidate) => ({ id: candidate.id, messageId: `m${candidate.id}@example.com` })),
+    }))
 }
 
 const htmlBodies: Record<number, string> = {
@@ -514,27 +531,55 @@ export const createFakeApi = (state: FakeState = emptyState(), overrides: Partia
             }
         },
         setSeen: async (messageIds, seen) => {
+            const changed = state.messages
+                .filter((candidate) => messageIds.includes(candidate.id) && candidate.flags.seen !== seen)
+                .map((candidate) => candidate.id)
             state.messages = state.messages.map((candidate) => {
                 return messageIds.includes(candidate.id)
                     ? { ...candidate, flags: { ...candidate.flags, seen } }
                     : candidate
             })
+
+            return changed
         },
         setFlagged: async (messageIds, flagged) => {
+            const changed = state.messages
+                .filter((candidate) => messageIds.includes(candidate.id) && candidate.flags.flagged !== flagged)
+                .map((candidate) => candidate.id)
             state.messages = state.messages.map((candidate) => {
                 return messageIds.includes(candidate.id)
                     ? { ...candidate, flags: { ...candidate.flags, flagged } }
                     : candidate
             })
+
+            return changed
         },
         deleteMessages: async (messageIds) => {
             const trash = state.folders.find((candidate) => candidate.role === 'Trash')
-            if (trash !== undefined) {
+            const moves = moved(state, messageIds, trash?.id ?? null)
+            if (trash === undefined) {
+                state.messages = state.messages.filter((candidate) => !messageIds.includes(candidate.id))
+            } else {
                 move(state, messageIds, trash.id)
             }
+
+            return moves
         },
         moveMessages: async (messageIds, folderId) => {
+            const moves = moved(state, messageIds, folderId)
             move(state, messageIds, folderId)
+
+            return moves
+        },
+        // Messages keep their id here; the real core gives them new ones.
+        putBack: async (moves) => {
+            for (const entry of moves) {
+                if (entry.toFolderId !== null) {
+                    move(state, entry.messages.map((candidate) => candidate.id), entry.fromFolderId)
+                }
+            }
+
+            return []
         },
 
         replyDraft: async (messageId, mode) => {

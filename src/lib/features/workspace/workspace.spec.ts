@@ -7,6 +7,7 @@ import {
     shownCategories,
     contactFull,
     dayLabel,
+    dropAction,
     emptyForm,
     errorMessage,
     accountLabel,
@@ -20,6 +21,7 @@ import {
     participantsLabel,
     pictureKey,
     isSafeLink,
+    nextRow,
     senderLabel,
     senderPicture,
     shortDate,
@@ -337,5 +339,50 @@ describe('inbox categories', () => {
         expect(inCategory(rows, 'Social').map((entry) => entry.latest.id)).toEqual([1, 4])
         expect(categoryUnread(rows, 'Social')).toBe(3)
         expect(categoryUnread(rows, 'Updates')).toBe(0)
+    })
+})
+
+describe('rows leaving the list', () => {
+    const row = (id: number): Conversation => {
+        return {
+            latest: message({ id }),
+            messageIds: [id],
+            count: 1,
+            unread: 0,
+            flagged: false,
+            senders: [],
+            category: null,
+        }
+    }
+    const shown = [row(5), row(4), row(3), row(2), row(1)]
+    const ids = (rows: Conversation[]) => rows.map((entry) => entry.latest.id)
+
+    it('are replaced by the row below them in the open tab', () => {
+        expect(nextRow(shown, [row(4)])?.latest.id).toBe(3)
+        expect(nextRow(shown, [row(4), row(3)])?.latest.id).toBe(2)
+        expect(nextRow(shown, [row(5), row(3)])?.latest.id).toBe(2)
+    })
+
+    it('are replaced by the row above them at the end, and by nothing when none stays', () => {
+        expect(nextRow(shown, [row(1)])?.latest.id).toBe(2)
+        expect(nextRow(shown, [row(2), row(1)])?.latest.id).toBe(3)
+        expect(nextRow([row(1)], [row(1)])).toBeNull()
+    })
+
+    it('are looked for only among the rows shown, not the whole folder', () => {
+        // Rows 4 and 2 are in another tab: the row after 3 in this one is 1.
+        const tab = [row(5), row(3), row(1)]
+
+        expect(nextRow(tab, [row(3)])?.latest.id).toBe(1)
+        expect(ids(tab)).toEqual([5, 3, 1])
+    })
+})
+
+describe('drop targets', () => {
+    it('say whether they take messages into a folder or a sender into a tab', () => {
+        expect(dropAction('folder:12')).toEqual({ kind: 'move', folderId: 12 })
+        expect(dropAction('category:Social')).toEqual({ kind: 'category', category: 'Social' })
+        expect(dropAction('category:Spam')).toBeNull()
+        expect(dropAction('folder:x')).toBeNull()
     })
 })

@@ -121,19 +121,19 @@ describe('Workspace', () => {
         await expect.element(page.getByRole('heading', { name: 'Lunch on Friday?' })).toBeInTheDocument()
         await expect.element(page.getByText('Body of Lunch on Friday?')).toBeInTheDocument()
         await expect.element(page.getByText('Ann <ann@example.com>')).toBeInTheDocument()
-        await expect.element(page.getByRole('button', { name: 'Mark unread' })).toBeEnabled()
+        await expect.element(toolbar().getByRole('button', { name: 'Mark unread' })).toBeEnabled()
         expect(state.messages.find((message) => message.id === 11)?.flags.seen).toBe(true)
     })
 
-    it('marks a message unread again and flags it', async () => {
+    it('marks a message unread again and stars it', async () => {
         const state = start()
 
         await row('Quarterly report').click()
-        await page.getByRole('button', { name: 'Mark unread' }).click()
-        await expect.element(page.getByRole('button', { name: 'Mark read' })).toBeInTheDocument()
+        await toolbar().getByRole('button', { name: 'Mark unread' }).click()
+        await expect.element(toolbar().getByRole('button', { name: 'Mark read' })).toBeInTheDocument()
 
-        await toolbar().getByRole('button', { name: 'Flag', exact: true }).click()
-        await expect.element(toolbar().getByRole('button', { name: 'Unflag' })).toBeInTheDocument()
+        await toolbar().getByRole('button', { name: 'Star', exact: true }).click()
+        await expect.element(toolbar().getByRole('button', { name: 'Remove star' })).toBeInTheDocument()
 
         const message = state.messages.find((candidate) => candidate.id === 10)
         expect(message?.flags).toEqual({ seen: false, flagged: true, answered: false })
@@ -143,7 +143,7 @@ describe('Workspace', () => {
         const state = start()
 
         await row('Lunch on Friday?').click()
-        await page.getByRole('button', { name: 'Delete' }).click()
+        await toolbar().getByRole('button', { name: 'Delete' }).click()
 
         await expect.element(row('Lunch on Friday?')).not.toBeInTheDocument()
         await expect.element(page.getByRole('heading', { name: 'Quarterly report' })).toBeInTheDocument()
@@ -276,14 +276,14 @@ describe('Workspace', () => {
         await expect.element(page.getByRole('button', { name: 'Account: me@corp.example' })).toBeInTheDocument()
     })
 
-    it('flags a message from its row in the list', async () => {
+    it('stars a message from its row in the list', async () => {
         const state = start()
 
-        await page.getByRole('list', { name: 'Messages' }).getByRole('button', { name: 'Flag', exact: true }).first().click()
+        await page.getByRole('list', { name: 'Messages' }).getByRole('button', { name: 'Star', exact: true }).first().click()
 
-        await expect.element(page.getByRole('button', { name: 'Unflag' })).toBeInTheDocument()
+        await expect.element(page.getByRole('button', { name: 'Remove star' })).toBeInTheDocument()
         expect(state.messages.find((message) => message.id === 11)?.flags.flagged).toBe(true)
-        // Flagging is not reading.
+        // Starring is not reading.
         expect(state.messages.find((message) => message.id === 11)?.flags.seen).toBe(false)
     })
 
@@ -819,5 +819,166 @@ describe('Workspace', () => {
         await expect.element(page.getByRole('tab', { name: /^Primary/ })).not.toBeInTheDocument()
         await expect.element(row('Autumn sale')).toBeInTheDocument()
         await expect.element(row('Lunch on Friday?')).toBeInTheDocument()
+    })
+
+    it('opens the next message of the open tab after one is deleted, not the next of the whole inbox', async () => {
+        const state = withShopMail(seededState())
+        const hello = message(21, 1, 'Hello there', 'Ann', false)
+        state.messages = [hello, ...state.messages]
+        render(Workspace, { api: createFakeApi(state) })
+
+        // In the inbox as a whole the shop's sale (Promotions) comes between them.
+        await row('Hello there').click()
+        await toolbar().getByRole('button', { name: 'Delete' }).click()
+
+        await expect.element(page.getByRole('heading', { name: 'Lunch on Friday?' })).toBeInTheDocument()
+        await expect.element(page.getByRole('tab', { name: /^Primary/ })).toHaveAttribute('aria-selected', 'true')
+    })
+
+    it('says what was deleted and puts it back, open again, when asked to undo', async () => {
+        const state = start()
+
+        await row('Lunch on Friday?').click()
+        await toolbar().getByRole('button', { name: 'Delete' }).click()
+
+        const notice = page.getByRole('status').filter({ hasText: 'Conversation moved to Trash.' })
+        await expect.element(notice).toBeInTheDocument()
+        await notice.getByRole('button', { name: 'Undo' }).click()
+
+        await expect.element(page.getByText('Undone.')).toBeInTheDocument()
+        await expect.element(row('Lunch on Friday?')).toBeInTheDocument()
+        await expect.element(page.getByRole('heading', { name: 'Lunch on Friday?' })).toBeInTheDocument()
+        expect(state.messages.find((message) => message.id === 11)?.folderId).toBe(1)
+    })
+
+    it('undoes a star with Ctrl+Z', async () => {
+        const state = start()
+
+        await page.getByRole('list', { name: 'Messages' }).getByRole('button', { name: 'Star', exact: true }).first().click()
+        await expect.element(page.getByText('Conversation starred.')).toBeInTheDocument()
+        await userEvent.keyboard('{Control>}z{/Control}')
+
+        await expect.element(page.getByText('Undone.')).toBeInTheDocument()
+        expect(state.messages.find((message) => message.id === 11)?.flags.flagged).toBe(false)
+    })
+
+    it('ticks rows with Ctrl and acts on all of them at once, and undo ticks them again', async () => {
+        const state = start()
+        const list = page.getByRole('list', { name: 'Messages' })
+
+        await row('Lunch on Friday?').click({ modifiers: ['Control'] })
+        await row('Quarterly report').click({ modifiers: ['Control'] })
+        // Ticking opens nothing.
+        await expect.element(page.getByText('Select a message to read it.')).toBeInTheDocument()
+        await expect.element(page.getByText('2 selected')).toBeInTheDocument()
+        await expect.element(list.getByRole('checkbox', { name: 'Select' }).first()).toBeChecked()
+
+        await page.getByRole('group', { name: 'Selected messages' }).getByRole('button', { name: 'Delete' }).click()
+
+        await expect.element(page.getByText('2 conversations moved to Trash.')).toBeInTheDocument()
+        expect(state.messages.every((message) => message.folderId === 4)).toBe(true)
+
+        await page.getByRole('button', { name: 'Undo' }).click()
+        await expect.element(row('Lunch on Friday?')).toBeInTheDocument()
+        await expect.element(page.getByText('2 selected')).toBeInTheDocument()
+    })
+
+    it('ticks a range with Shift and the arrows, and deletes it with Shift+Left', async () => {
+        const state = start()
+
+        await row('Lunch on Friday?').click()
+        await userEvent.keyboard('{Shift>}{ArrowDown}{/Shift}')
+        await expect.element(page.getByText('2 selected')).toBeInTheDocument()
+        await expect.element(row('Quarterly report')).toHaveFocus()
+
+        // Space unticks the row the keyboard is on.
+        await userEvent.keyboard(' ')
+        await expect.element(page.getByText('1 selected')).toBeInTheDocument()
+
+        await userEvent.keyboard('{Shift>}{ArrowLeft}{/Shift}')
+        await expect.element(row('Lunch on Friday?')).not.toBeInTheDocument()
+        expect(state.messages.find((message) => message.id === 10)?.folderId).toBe(1)
+    })
+
+    it('walks the rows with the arrows without opening them, and opens one with Enter', async () => {
+        start()
+
+        await row('Lunch on Friday?').click()
+        await userEvent.keyboard('{ArrowDown}')
+        await expect.element(row('Quarterly report')).toHaveFocus()
+        await expect.element(page.getByRole('heading', { name: 'Lunch on Friday?' })).toBeInTheDocument()
+
+        await userEvent.keyboard('{Enter}')
+        await expect.element(page.getByRole('heading', { name: 'Quarterly report' })).toBeInTheDocument()
+    })
+
+    it('reports spam from a row and takes it back out of Junk', async () => {
+        const state = seededState()
+        state.folders.push({ id: 6, accountId: 1, path: 'Spam', name: 'Spam', depth: 0, role: 'Junk', selectable: true, unread: 0, total: 0 })
+        render(Workspace, { api: createFakeApi(state) })
+
+        const lunch = rows().filter({ hasText: 'Lunch on Friday?' })
+        await lunch.hover()
+        await lunch.getByRole('button', { name: 'Report spam' }).click()
+
+        await expect.element(page.getByText('Conversation reported as spam.')).toBeInTheDocument()
+        expect(state.messages.find((message) => message.id === 11)?.folderId).toBe(6)
+
+        await folder('Junk').click()
+        const junk = rows().filter({ hasText: 'Lunch on Friday?' })
+        await junk.hover()
+        await junk.getByRole('button', { name: 'Not spam' }).click()
+        expect(state.messages.find((message) => message.id === 11)?.folderId).toBe(1)
+    })
+
+    it('moves a row dragged onto a folder there', async () => {
+        const state = start()
+
+        await row('Quarterly report').dropTo(folder('Receipts'))
+
+        await expect.element(page.getByText('Conversation moved to Receipts.')).toBeInTheDocument()
+        expect(state.messages.find((message) => message.id === 10)?.folderId).toBe(5)
+    })
+
+    it('shrinks a dragged row over a folder that takes it, and lets it fall in there', async () => {
+        const state = start()
+        await expect.element(row('Quarterly report')).toBeInTheDocument()
+        const source = row('Quarterly report').element().closest('li')
+        const target = folder('Receipts').element().getBoundingClientRect()
+        expect(source).not.toBeNull()
+        const from = source?.getBoundingClientRect() ?? target
+        const at = (x: number, y: number) => ({ bubbles: true, pointerId: 1, isPrimary: true, button: 0, clientX: x, clientY: y })
+        const ghost = () => document.querySelector('.ghost')
+
+        source?.dispatchEvent(new PointerEvent('pointerdown', at(from.left + 100, from.top + 10)))
+        window.dispatchEvent(new PointerEvent('pointermove', at(from.left + 110, from.top + 30)))
+        await expect.poll(() => ghost()?.classList.contains('over')).toBe(false)
+
+        window.dispatchEvent(new PointerEvent('pointermove', at(target.left + 20, target.top + 5)))
+        await expect.poll(() => ghost()?.classList.contains('over')).toBe(true)
+
+        window.dispatchEvent(new PointerEvent('pointerup', at(target.left + 20, target.top + 5)))
+        await expect.poll(() => ghost()?.classList.contains('landing')).toBe(true)
+        await expect.poll(() => ghost()).toBeNull()
+        expect(state.messages.find((message) => message.id === 10)?.folderId).toBe(5)
+    })
+
+    it('opens a message over the list when the settings say so, and goes back to the list as it was', async () => {
+        const state = seededState()
+        state.settings = { ...state.settings, reader: 'Full' }
+        render(Workspace, { api: createFakeApi(state) })
+
+        await row('Quarterly report').click({ modifiers: ['Control'] })
+        await row('Lunch on Friday?').click()
+        await expect.element(page.getByRole('heading', { name: 'Lunch on Friday?' })).toBeInTheDocument()
+        // Still there underneath, out of sight and out of reach.
+        await expect.element(page.getByText('Quarterly report')).not.toBeVisible()
+        await expect.element(row('Quarterly report')).not.toBeInTheDocument()
+
+        await toolbar().getByRole('button', { name: 'Back to the list' }).click()
+
+        await expect.element(row('Lunch on Friday?')).toHaveFocus()
+        await expect.element(page.getByText('1 selected')).toBeInTheDocument()
+        await expect.element(page.getByRole('heading', { name: 'Lunch on Friday?' })).not.toBeInTheDocument()
     })
 })

@@ -17,7 +17,7 @@ export const folderLabel = (folder: Folder): string => {
 export const folderIcon = (folder: Folder): IconName => {
     const icons: Record<FolderRole, IconName> = {
         Inbox: 'inbox',
-        Flagged: 'flag',
+        Flagged: 'star',
         Drafts: 'drafts',
         Sent: 'sent',
         Archive: 'archive',
@@ -126,6 +126,56 @@ export const inCategory = (conversations: Conversation[], category: Category): C
 
 export const categoryUnread = (conversations: Conversation[], category: Category): number => {
     return inCategory(conversations, category).reduce((sum, conversation) => sum + conversation.unread, 0)
+}
+
+// What can be done to rows of the list, from a row, the selection, the
+// keyboard, a drop or the open message's toolbar.
+export type ListAction =
+    | { kind: 'delete' }
+    | { kind: 'archive' }
+    // To Junk, or out of it to the inbox when the list is Junk.
+    | { kind: 'spam' }
+    | { kind: 'seen', seen: boolean }
+    | { kind: 'star', star: boolean }
+    | { kind: 'move', folderId: number }
+    // Every message from the rows' senders goes to this inbox tab from now on.
+    | { kind: 'category', category: Category }
+
+const categories: Category[] = [
+    'Primary',
+    ...optionalCategories,
+]
+
+// What a drop target says it takes (`data-drop` on folders and tabs).
+export const dropAction = (target: string): ListAction | null => {
+    const [kind, value] = target.split(':')
+    if (kind === 'folder' && value !== undefined && /^\d+$/.test(value)) {
+        return { kind: 'move', folderId: Number(value) }
+    }
+    const category = categories.find((candidate) => candidate === value)
+    if (kind === 'category' && category !== undefined) {
+        return { kind: 'category', category }
+    }
+
+    return null
+}
+
+// The row that takes the place of rows leaving the list `shown` (the open
+// tab's rows, as the user sees them): the first one below them that stays,
+// else the nearest one above.
+export const nextRow = (shown: Conversation[], leaving: Conversation[]): Conversation | null => {
+    const gone = (row: Conversation) => leaving.some((candidate) => candidate.latest.id === row.latest.id)
+    const last = shown.findLastIndex(gone)
+    if (last === -1) {
+        return null
+    }
+
+    const below = shown.slice(last + 1).find((row) => !gone(row))
+    if (below !== undefined) {
+        return below
+    }
+
+    return shown.slice(0, last).findLast((row) => !gone(row)) ?? null
 }
 
 export const inboxUnread = (folders: Folder[]): number => {

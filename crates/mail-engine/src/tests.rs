@@ -890,6 +890,230 @@ async fn moving_takes_the_message_to_the_target_folder() {
     );
 }
 
+#[tokio::test]
+async fn a_flag_change_names_only_the_messages_it_changed() {
+    let (world, account) = with_account().await;
+    {
+        let mut remote = world.remote.lock().unwrap();
+        remote.deliver("INBOX", "Read", true);
+        remote.deliver("INBOX", "Unread", false);
+    }
+    let inbox = folder(&world, &account, FolderRole::Inbox);
+    let ids: Vec<i64> = world
+        .engine
+        .sync_folder(inbox.id, false)
+        .await
+        .unwrap()
+        .iter()
+        .map(|message| message.id)
+        .collect();
+
+    // Newest first: "Unread" is the first.
+    let changed = world.engine.set_flag(&ids, Flag::Seen, true).await.unwrap();
+    assert_eq!(changed, vec![ids[0]]);
+
+    let changed = world
+        .engine
+        .set_flag(&ids, Flag::Flagged, false)
+        .await
+        .unwrap();
+    assert_eq!(changed, Vec::<i64>::new());
+}
+
+/// Delivers `subjects` to the inbox, unread, and returns the account's world
+/// with the inbox synced, so arrivals after it are news.
+async fn with_inbox(subjects: &[&str]) -> (World, Account, Folder, Vec<MessageSummary>) {
+    let (world, account) = with_account().await;
+    {
+        let mut remote = world.remote.lock().unwrap();
+        for subject in subjects {
+            remote.deliver("INBOX", subject, false);
+        }
+    }
+    let inbox = folder(&world, &account, FolderRole::Inbox);
+    let messages = world.engine.sync_folder(inbox.id, false).await.unwrap();
+
+    (world, account, inbox, messages)
+}
+
+#[tokio::test]
+async fn a_deleted_message_is_put_back_quietly_under_a_new_id() {
+    let (world, account, inbox, messages) = with_inbox(&["Keep", "Oops"]).await;
+    let oops = messages
+        .iter()
+        .find(|message| message.subject == "Oops")
+        .unwrap();
+    let trash = folder(&world, &account, FolderRole::Trash);
+    let mut events = world.engine.subscribe();
+
+    let moves = world.engine.delete_messages(&[oops.id]).await.unwrap();
+    assert_eq!(moves[0].from_folder_id, inbox.id);
+    assert_eq!(moves[0].to_folder_id, Some(trash.id));
+    assert_eq!(
+        moves[0].messages[0].message_id.as_deref(),
+        Some("Oops@example.com")
+    );
+
+    let restored = world.engine.put_back(&moves).await.unwrap();
+
+    assert_eq!(
+        world.remote.lock().unwrap().uids("Trash"),
+        Vec::<u32>::new()
+    );
+    let cached = world.engine.list_messages(inbox.id).unwrap();
+    assert_eq!(subjects(&cached), vec!["Oops", "Keep"]);
+    assert_eq!(restored.len(), 1);
+    assert_eq!(restored[0].was, oops.id);
+    assert_eq!(restored[0].now, cached[0].id);
+    assert_ne!(restored[0].now, oops.id);
+    let now = folder(&world, &account, FolderRole::Inbox);
+    assert_eq!((now.unread, now.total), (2, 2));
+    // Unread mail coming back to the inbox is not new mail.
+    assert!(
+        !heard(&mut events)
+            .iter()
+            .any(|event| matches!(event, MailEvent::NewMail { .. }))
+    );
+
+    // A later sync finds nothing to catch up on.
+    let synced = world.engine.sync_folder(inbox.id, false).await.unwrap();
+    assert_eq!(subjects(&synced), vec!["Oops", "Keep"]);
+}
+
+#[tokio::test]
+async fn mail_arriving_while_something_is_put_back_is_still_news() {
+    let (world, _account, _inbox, messages) = with_inbox(&["Keep", "Oops"]).await;
+    let moves = world
+        .engine
+        .delete_messages(&[messages[0].id])
+        .await
+        .unwrap();
+    world
+        .remote
+        .lock()
+        .unwrap()
+        .deliver("INBOX", "Fresh", false);
+    let mut events = world.engine.subscribe();
+
+    world.engine.put_back(&moves).await.unwrap();
+
+    let news: Vec<String> = heard(&mut events)
+        .into_iter()
+        .filter_map(|event| match event {
+            MailEvent::NewMail { messages, .. } => Some(messages),
+            _ => None,
+        })
+        .flatten()
+        .map(|item| item.subject)
+        .collect();
+    assert_eq!(news, vec!["Fresh".to_string()]);
+}
+
+#[tokio::test]
+async fn a_moved_message_is_put_back_and_one_deleted_for_good_is_not() {
+    let (world, account, inbox, messages) = with_inbox(&["Filed"]).await;
+    let archive = folder(&world, &account, FolderRole::Archive);
+
+    let moves = world
+        .engine
+        .move_messages(&[messages[0].id], archive.id)
+        .await
+        .unwrap();
+    assert!(!moves[0].kept);
+    world.engine.put_back(&moves).await.unwrap();
+
+    assert_eq!(
+        world.remote.lock().unwrap().uids("Archive"),
+        Vec::<u32>::new()
+    );
+    assert_eq!(
+        subjects(&world.engine.list_messages(inbox.id).unwrap()),
+        vec!["Filed"]
+    );
+
+    // From the trash, deleting is final: there is nothing to put back.
+    let trash = folder(&world, &account, FolderRole::Trash);
+    world.remote.lock().unwrap().deliver("Trash", "Gone", true);
+    let trashed = world.engine.sync_folder(trash.id, false).await.unwrap();
+    let moves = world
+        .engine
+        .delete_messages(&[trashed[0].id])
+        .await
+        .unwrap();
+    assert_eq!(moves[0].to_folder_id, None);
+    assert_eq!(world.engine.put_back(&moves).await.unwrap(), Vec::new());
+    assert_eq!(
+        world.remote.lock().unwrap().uids("Trash"),
+        Vec::<u32>::new()
+    );
+}
+
+#[tokio::test]
+async fn nothing_leaves_all_mail_so_moving_from_it_copies_and_undoing_removes_the_copy() {
+    let (world, account) = with_account().await;
+    {
+        let mut remote = world.remote.lock().unwrap();
+        remote.folders.push(crate::testing::FakeFolder {
+            path: "All".to_string(),
+            role: FolderRole::All,
+            uid_validity: 1,
+            next_uid: 1,
+            messages: Vec::new(),
+        });
+        remote.deliver("All", "Everywhere", true);
+    }
+    world.engine.refresh_folders(account.id).await.unwrap();
+    let all = folder(&world, &account, FolderRole::All);
+    let archive = folder(&world, &account, FolderRole::Archive);
+    let id = world.engine.sync_folder(all.id, false).await.unwrap()[0].id;
+
+    let moves = world.engine.move_messages(&[id], archive.id).await.unwrap();
+
+    assert!(moves[0].kept);
+    assert_eq!(world.remote.lock().unwrap().uids("All").len(), 1);
+    assert_eq!(world.remote.lock().unwrap().uids("Archive").len(), 1);
+    assert_eq!(world.engine.list_messages(all.id).unwrap()[0].id, id);
+
+    world.engine.put_back(&moves).await.unwrap();
+    assert_eq!(world.remote.lock().unwrap().uids("All").len(), 1);
+    assert_eq!(
+        world.remote.lock().unwrap().uids("Archive"),
+        Vec::<u32>::new()
+    );
+}
+
+#[tokio::test]
+async fn archiving_into_all_mail_is_undone_by_copying_back() {
+    let (world, account, inbox, messages) = with_inbox(&["Later"]).await;
+    {
+        let mut remote = world.remote.lock().unwrap();
+        remote.folders.push(crate::testing::FakeFolder {
+            path: "All".to_string(),
+            role: FolderRole::All,
+            uid_validity: 1,
+            next_uid: 1,
+            messages: Vec::new(),
+        });
+    }
+    world.engine.refresh_folders(account.id).await.unwrap();
+    let all = folder(&world, &account, FolderRole::All);
+
+    let moves = world
+        .engine
+        .move_messages(&[messages[0].id], all.id)
+        .await
+        .unwrap();
+    assert!(!moves[0].kept);
+    world.engine.put_back(&moves).await.unwrap();
+
+    // The message stays in All mail, as every message there does.
+    assert_eq!(world.remote.lock().unwrap().uids("All").len(), 1);
+    assert_eq!(
+        subjects(&world.engine.list_messages(inbox.id).unwrap()),
+        vec!["Later"]
+    );
+}
+
 // Conversations
 
 /// A message with the headers that decide its conversation, written on

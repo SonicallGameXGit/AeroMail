@@ -8,11 +8,13 @@
 
     type Props = {
         // What the open message, or conversation as a whole, is: read when
-        // nothing in it is unread, flagged when anything in it is.
+        // nothing in it is unread, starred when anything in it is.
         seen: boolean
-        flagged: boolean
-        // False when the account has no archive folder.
+        starred: boolean
+        // False when there is nowhere to archive to, or it is there already.
         canArchive: boolean
+        // To Junk, back out of it, or not offered where there is no Junk.
+        spam: 'report' | 'undo' | null
         moveTargets: Folder[]
         // The tabs of a sorted inbox the sender can be put in; none outside
         // the inbox, while it is not sorted, or without a sender.
@@ -29,15 +31,22 @@
         // sender back to the automatic rules.
         oncategory: (category: Category | null) => void
         ondelete: () => void
+        onspam: () => void
         onseen: () => void
-        onflag: () => void
+        onstar: () => void
+        // Given when the message covers the list: goes back to it.
+        onback?: () => void
     }
 
-    let { seen, flagged, canArchive, moveTargets, categories, category, sender, sorted, onreply, onarchive, onmove, oncategory, ondelete, onseen, onflag }: Props = $props()
+    let { seen, starred, canArchive, spam, moveTargets, categories, category, sender, sorted, onreply, onarchive, onmove, oncategory, ondelete, onspam, onseen, onstar, onback }: Props = $props()
 </script>
 
 <!-- Three groups, by what they do: answer the message, put it away, mark it. -->
 <div class="actions" role="toolbar" aria-label={t('toolbar.label')}>
+    {#if onback !== undefined}
+        <Button variant="tool" icon="back" label={t('toolbar.back')} onclick={onback} />
+        <span class="divider"></span>
+    {/if}
     <div class="group answer" role="group">
         <Button icon="reply" onclick={() => onreply('Reply')}>{t('toolbar.reply')}</Button>
         <Button icon="replyAll" label={t('toolbar.replyAll')} onclick={() => onreply('ReplyAll')} />
@@ -88,6 +97,14 @@
                 {/snippet}
             </Menu>
         {/if}
+        {#if spam !== null}
+            <Button
+                variant="tool"
+                icon={spam === 'report' ? 'junk' : 'inbox'}
+                label={spam === 'report' ? t('toolbar.spam') : t('toolbar.notSpam')}
+                onclick={onspam}
+            />
+        {/if}
         <Button variant="tool" tone="danger" icon="trash" label={t('toolbar.delete')} onclick={ondelete} />
     </div>
 
@@ -102,9 +119,9 @@
         />
         <Button
             variant="tool"
-            icon={flagged ? 'flag' : 'flagOff'}
-            label={flagged ? t('toolbar.unflag') : t('toolbar.flag')}
-            onclick={onflag}
+            icon={starred ? 'star' : 'starOff'}
+            label={starred ? t('toolbar.unstar') : t('toolbar.star')}
+            onclick={onstar}
         />
     </div>
 </div>

@@ -320,6 +320,45 @@ impl IncomingSession for FakeSession {
         })
     }
 
+    async fn copy_messages(&mut self, folder: &str, uids: &[u32], target: &str) -> MailResult<()> {
+        let copied = self.with_folder(folder, |folder| {
+            folder
+                .messages
+                .iter()
+                .filter(|message| uids.contains(&message.uid))
+                .cloned()
+                .collect::<Vec<FakeMessage>>()
+        })?;
+
+        self.with_folder(target, |target| {
+            for mut message in copied {
+                message.uid = target.next_uid;
+                target.next_uid += 1;
+                target.messages.push(message);
+            }
+        })
+    }
+
+    async fn find_messages(
+        &mut self,
+        folder: &str,
+        message_ids: &[String],
+    ) -> MailResult<Vec<u32>> {
+        self.with_folder(folder, |folder| {
+            folder
+                .messages
+                .iter()
+                .filter(|message| {
+                    let header = String::from_utf8_lossy(&header_of(&message.raw)).to_string();
+                    message_ids
+                        .iter()
+                        .any(|id| header.contains(&format!("Message-ID: <{id}>")))
+                })
+                .map(|message| message.uid)
+                .collect()
+        })
+    }
+
     async fn delete_messages(&mut self, folder: &str, uids: &[u32]) -> MailResult<()> {
         self.with_folder(folder, |folder| {
             folder

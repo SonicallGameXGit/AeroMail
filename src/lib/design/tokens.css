@@ -39,6 +39,12 @@
     --motion-soft: 220ms ease-out;
     --motion-spin: 900ms;
 
+    /* Dragged rows: see-through while carried, smaller over a place that
+       takes them, smaller still as they fall into it. */
+    --drag-opacity: 0.8;
+    --drag-shrink: 0.6;
+    --drag-land: 0.15;
+
     /* Backdrop: Frutiger Aero sky and water, drawn in CSS */
     --backdrop-top: #2f8fd8;
     --backdrop-middle: #7fd0f0;

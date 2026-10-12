@@ -24,6 +24,8 @@
         // Id of the popover this button opens and closes.
         popovertarget?: string
         expanded?: boolean
+        // -1 keeps it out of the Tab order, for a control the keyboard reaches another way.
+        tabindex?: number
     }
 
     let {
@@ -40,6 +42,7 @@
         onclick,
         popovertarget,
         expanded,
+        tabindex,
     }: Props = $props()
 
     const iconSizes = {
@@ -55,6 +58,7 @@
     {disabled}
     {onclick}
     {popovertarget}
+    {tabindex}
     title={label}
     aria-label={label}
     aria-pressed={pressed}

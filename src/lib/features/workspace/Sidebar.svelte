@@ -9,11 +9,13 @@
         // The folders of the account that is open.
         folders: Folder[]
         selectedFolderId: number | null
+        // The drop target dragged messages are over (`folder:<id>`), if any.
+        dropTarget: string | null
         onselect: (folder: Folder) => void
         oncompose: () => void
     }
 
-    let { folders, selectedFolderId, onselect, oncompose }: Props = $props()
+    let { folders, selectedFolderId, dropTarget, onselect, oncompose }: Props = $props()
 
     let groups = $derived(groupFolders(folders))
 
@@ -34,7 +36,9 @@
             class:selected={folder.id === selectedFolderId}
             class:unread={folder.unread > 0}
             class:inbox={folder.role === 'Inbox'}
+            class:over={dropTarget === 'folder:' + folder.id}
             type="button"
+            data-drop={'folder:' + folder.id}
             title={folderLabel(folder)}
             aria-label={describe(folder)}
             aria-current={folder.id === selectedFolderId}
@@ -148,6 +152,14 @@
         border-color: var(--row-selected-border);
         background: var(--row-selected-face);
         color: var(--text);
+    }
+
+    /* The folder dragged messages would go to glows. */
+    .folder.over {
+        border-color: var(--row-selected-border);
+        background: var(--row-selected-face);
+        color: var(--text);
+        box-shadow: var(--focus-glow);
     }
 
     .folder:focus-visible {

@@ -306,7 +306,7 @@ async fn settings_and_sender_pictures_go_under_the_names_the_ui_uses() {
     assert_eq!(
         dispatch(&engine, "settings", Value::Null).await,
         Ok(
-            json!({ "senderPictures": true, "remoteImages": false, "switchToNewAccount": true, "theme": "System", "notifications": notifications, "conversations": { "enabled": true, "sameSubject": true, "otherFolders": true }, "categories": { "enabled": true, "social": true, "promotions": true, "updates": false, "forums": false } })
+            json!({ "senderPictures": true, "remoteImages": false, "switchToNewAccount": true, "theme": "System", "reader": "Beside", "notifications": notifications, "conversations": { "enabled": true, "sameSubject": true, "otherFolders": true }, "categories": { "enabled": true, "social": true, "promotions": true, "updates": false, "forums": false } })
         )
     );
 
@@ -324,7 +324,7 @@ async fn settings_and_sender_pictures_go_under_the_names_the_ui_uses() {
     });
     let grouping = json!({ "enabled": false, "sameSubject": false, "otherFolders": true });
     let sorting = json!({ "enabled": false, "social": false, "promotions": true, "updates": true, "forums": false });
-    let changed = json!({ "senderPictures": false, "remoteImages": true, "switchToNewAccount": false, "theme": "Slate", "notifications": quiet, "conversations": grouping, "categories": sorting });
+    let changed = json!({ "senderPictures": false, "remoteImages": true, "switchToNewAccount": false, "theme": "Slate", "reader": "Full", "notifications": quiet, "conversations": grouping, "categories": sorting });
     let off = dispatch(&engine, "set_settings", json!({ "settings": changed })).await;
     assert_eq!(off, Ok(Value::Null));
     assert_eq!(
@@ -343,6 +343,27 @@ async fn conversations_are_asked_for_under_the_names_the_ui_uses() {
     assert_eq!(kind(listed), "NotFound");
     let opened = dispatch(&engine, "conversation", json!({ "messageId": 9 })).await;
     assert_eq!(kind(opened), "NotFound");
+}
+
+#[tokio::test]
+async fn putting_back_takes_moves_under_the_names_the_ui_uses() {
+    let engine = engine();
+    let moves = |to: Value| {
+        json!({ "moves": [{
+            "fromFolderId": 1,
+            "toFolderId": to,
+            "kept": false,
+            "messages": [{ "id": 7, "messageId": "a@example.com" }],
+        }] })
+    };
+
+    // Deleted for good: nothing to look for, nothing put back.
+    assert_eq!(
+        dispatch(&engine, "put_back", moves(Value::Null)).await,
+        Ok(json!([]))
+    );
+    let missing = dispatch(&engine, "put_back", moves(json!(2))).await;
+    assert_eq!(missing.unwrap_err()["kind"], "NotFound");
 }
 
 #[tokio::test]

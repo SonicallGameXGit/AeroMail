@@ -1,7 +1,7 @@
 <script lang="ts">
-    import { onMount } from 'svelte'
+    import { onMount, tick } from 'svelte'
     import { toMailError } from '$lib/api'
-    import type { Account, Api, AppSettings, Attachment, Category, CategoryRule, CategorySettings, Conversation, ConversationSettings, Folder, MailError, MailEvent, MessageContent, MessageSummary, NotificationTarget, ReplyMode } from '$lib/api'
+    import type { Account, Api, AppSettings, Attachment, Category, CategoryRule, CategorySettings, Conversation, ConversationSettings, Folder, MailError, MailEvent, MessageContent, MessageSummary, Moved, NotificationTarget, ReplyMode } from '$lib/api'
     import Backdrop from '$lib/design/Backdrop.svelte'
     import Button from '$lib/design/Button.svelte'
     import GlassWindow from '$lib/design/GlassWindow.svelte'
@@ -10,6 +10,7 @@
     import Modal from '$lib/design/Modal.svelte'
     import Notice from '$lib/design/Notice.svelte'
     import Splitter from '$lib/design/Splitter.svelte'
+    import Toast from '$lib/design/Toast.svelte'
     import { applyTheme, colorScheme } from '$lib/design/theme'
     import AccountSetup from '$lib/features/accounts/AccountSetup.svelte'
     import { newMailNotification } from '$lib/features/notifications/notification'
@@ -32,8 +33,26 @@
     import MessageActions from './MessageActions.svelte'
     import MessageList from './MessageList.svelte'
     import Reader from './Reader.svelte'
+    import { emptySelection, keepListed, type Selection } from './selection'
     import Sidebar from './Sidebar.svelte'
-    import { answerTarget, categoryUnread, emptyForm, errorMessage, formFromDraft, groupFolders, inCategory, pictureKey, senderPicture, shownCategories, toOutgoing, type ComposeForm, type Pictures } from './workspace'
+    import {
+        answerTarget,
+        categoryUnread,
+        emptyForm,
+        errorMessage,
+        folderLabel,
+        formFromDraft,
+        groupFolders,
+        inCategory,
+        nextRow,
+        pictureKey,
+        senderPicture,
+        shownCategories,
+        toOutgoing,
+        type ComposeForm,
+        type ListAction,
+        type Pictures,
+    } from './workspace'
 
     let { api }: { api: Api } = $props()
 
@@ -73,6 +92,7 @@
         remoteImages: false,
         switchToNewAccount: true,
         theme: 'System',
+        reader: 'Beside',
         notifications: {
             enabled: false,
             sound: false,
@@ -105,6 +125,14 @@
     // Addresses already asked about, so a refreshed list asks nothing twice.
     // Not state on purpose: asking must not make the list ask again.
     let asked: Record<string, true> = {}
+    // The ticked rows of the list.
+    let selection = $state<Selection>(emptySelection)
+    // The folder or tab dragged rows are over, as its `data-drop` names it.
+    let dropTarget = $state<string | null>(null)
+    // What the last action did, until its message is closed, with its undo.
+    let notice = $state<{ id: number, text: string, undo: (() => void) | null } | null>(null)
+    let notices = 0
+    let list = $state<ReturnType<typeof MessageList> | null>(null)
     let form = $state<ComposeForm | null>(null)
     let sending = $state(false)
     let sendError = $state<MailError | null>(null)
@@ -121,9 +149,31 @@
     // A tab that was turned off is not open any more: its mail is in Primary.
     let openCategory = $derived(tabs.some((tab) => tab.category === category) ? category : 'Primary')
     let visible = $derived(tabs.length === 0 ? conversations : inCategory(conversations, openCategory))
+    let shownSelection = $derived(keepListed(selection, visible.map((conversation) => conversation.latest.id)))
+    // An open message covers the list instead of standing next to it.
+    let full = $derived(settings.reader === 'Full')
+    let reading = $derived(selectedId !== null)
     let account = $derived(accounts?.find((candidate) => candidate.id === accountId) ?? null)
     let accountFolders = $derived(accountId === null ? [] : folders[accountId] ?? [])
-    let archiveFolder = $derived(accountFolders.find((folder) => folder.role === 'Archive' && folder.selectable) ?? null)
+    // Archiving takes mail out of the inbox and keeps it: in the Archive
+    // folder, or where the account keeps everything (Gmail's All mail). Only
+    // from the inbox and the user's own folders.
+    let archiveFolder = $derived.by(() => {
+        const role = selectedFolder?.role
+        if (role !== 'Inbox' && role !== 'Other' && role !== 'Flagged') {
+            return null
+        }
+        const usable = accountFolders.filter((folder) => folder.selectable && folder.id !== selectedFolder?.id)
+
+        return usable.find((folder) => folder.role === 'Archive') ?? usable.find((folder) => folder.role === 'All') ?? null
+    })
+    // Spam goes to Junk; in Junk, "not spam" takes it back to the inbox.
+    let spamFolder = $derived.by(() => {
+        const role = selectedFolder?.role === 'Junk' ? 'Inbox' : 'Junk'
+
+        return accountFolders.find((folder) => folder.role === role && folder.selectable) ?? null
+    })
+    let spam = $derived<'report' | 'undo' | null>(spamFolder === null ? null : selectedFolder?.role === 'Junk' ? 'undo' : 'report')
     // Offered in the order the sidebar shows them.
     let moveTargets = $derived.by(() => {
         const groups = groupFolders(accountFolders)
@@ -195,6 +245,7 @@
 
     const selectFolder = (folder: Folder) => guard(async () => {
         selectedFolder = folder
+        selection = emptySelection
         close()
         // Cached messages show at once; the server is asked right after.
         await reloadList(folder)
@@ -271,6 +322,7 @@
             && next.remoteImages === before.remoteImages
             && next.switchToNewAccount === before.switchToNewAccount
             && next.theme === before.theme
+            && next.reader === before.reader
             && sameGrouping(next.conversations, before.conversations)
             && sameCategories(next.categories, before.categories)
         if (onlyNotifications) {
@@ -380,13 +432,26 @@
         }
     }
 
-    const setSeen = async (ids: number[], seen: boolean) => {
-        await api.setSeen(ids, seen)
+    // Resolves to the messages it changed.
+    const setSeen = async (ids: number[], seen: boolean): Promise<number[]> => {
+        const changed = await api.setSeen(ids, seen)
         patch(ids, { seen })
         if (selectedFolder !== null) {
             await reloadList(selectedFolder)
             await reloadFolders(selectedFolder.accountId)
         }
+
+        return changed
+    }
+
+    const setStarred = async (ids: number[], flagged: boolean): Promise<number[]> => {
+        const changed = await api.setFlagged(ids, flagged)
+        patch(ids, { flagged })
+        if (selectedFolder !== null) {
+            await reloadList(selectedFolder)
+        }
+
+        return changed
     }
 
     // A conversation of several opens as a chat; a message on its own as before.
@@ -438,78 +503,272 @@
         }
     })
 
-    // Read when everything is read: marking it unread marks its newest
-    // message, which is enough to bring it back to attention.
-    const toggleSeen = () => guard(async () => {
-        if (selected === null) {
-            return
+    // After rows leave the list, the row below them in the open tab takes
+    // the open one's place, as it does in Gmail.
+    const leave = async (rows: Conversation[]) => {
+        const open = selected
+        const wasOpen = open !== null && rows.some((row) => row.latest.id === open.latest.id)
+        const next = wasOpen ? nextRow(visible, rows) : null
+        const gone = rows.map((row) => row.latest.id)
+        conversations = conversations.filter((conversation) => !gone.includes(conversation.latest.id))
+        selection = { ...selection, keys: selection.keys.filter((key) => !gone.includes(key)) }
+        if (wasOpen) {
+            close()
         }
-        if (selected.unread > 0) {
-            await setSeen(selected.messageIds, true)
-        } else {
-            await setSeen([selected.latest.id], false)
-        }
-    })
-
-    // Flagging a conversation flags its newest message; unflagging clears every flag in it.
-    const toggleFlagged = (conversation: Conversation) => guard(async () => {
-        const flagged = !conversation.flagged
-        const ids = flagged ? [conversation.latest.id] : conversation.messageIds
-        await api.setFlagged(ids, flagged)
-        patch(ids, { flagged })
-        if (selectedFolder !== null) {
-            await reloadList(selectedFolder)
-        }
-    })
-
-    // After a row leaves the folder, the one below it takes its place.
-    const leave = async (gone: Conversation) => {
-        const index = conversations.findIndex((conversation) => conversation.latest.id === gone.latest.id)
-        conversations = conversations.filter((conversation) => conversation.latest.id !== gone.latest.id)
-        close()
         if (selectedFolder !== null) {
             await reloadFolders(selectedFolder.accountId)
         }
-
-        const next = conversations[index] ?? conversations[index - 1]
-        if (next !== undefined) {
+        if (next !== null) {
             await openConversation(next)
         }
     }
 
-    // Deleting or moving a conversation takes all of its messages in this folder.
-    const remove = () => guard(async () => {
-        if (selected === null) {
+    // How the message of an action names what it acted on.
+    const what = (rows: Conversation[]): string => {
+        const grouped = settings.conversations.enabled
+        if (rows.length === 1) {
+            return grouped ? t('undo.conversation') : t('undo.message')
+        }
+        const count = String(rows.length)
+
+        return grouped ? t('undo.conversations', { count }) : t('undo.messages', { count })
+    }
+
+    // The list as it was before an action, to come back to when it is undone.
+    type Snapshot = {
+        folderId: number
+        selection: Selection
+        openId: number | null
+        category: Category
+    }
+
+    // Undoing resolves to the new ids of messages that came back under one.
+    type Undo = () => Promise<Map<number, number>>
+
+    const say = (text: string, undo: (() => void) | null = null) => {
+        notices += 1
+        notice = { id: notices, text, undo }
+    }
+
+    const offer = (text: string, undo: Undo | null, snapshot: Snapshot) => {
+        say(text, undo === null ? null : () => revert(undo, snapshot))
+    }
+
+    // Undoes an action and brings back what was ticked and open.
+    const revert = (undo: Undo, snapshot: Snapshot) => guard(async () => {
+        notice = null
+        const renamed = await undo()
+        say(t('undo.undone'))
+        const folder = selectedFolder
+        if (folder === null) {
             return
         }
-        const gone = selected
-        await api.deleteMessages(gone.messageIds)
-        await leave(gone)
+        await reloadList(folder)
+        await reloadFolders(folder.accountId)
+        if (folder.id !== snapshot.folderId) {
+            return
+        }
+
+        const rowOf = (id: number | null): number | null => {
+            if (id === null) {
+                return null
+            }
+            const now = renamed.get(id) ?? id
+
+            return conversations.find((conversation) => conversation.messageIds.includes(now))?.latest.id ?? null
+        }
+        const rows = (keys: number[]) => keys.map(rowOf).filter((key) => key !== null)
+        category = snapshot.category
+        selection = {
+            keys: rows(snapshot.selection.keys),
+            anchor: rowOf(snapshot.selection.anchor),
+            base: rows(snapshot.selection.base),
+        }
+        const openRow = rowOf(snapshot.openId)
+        const reopen = conversations.find((conversation) => conversation.latest.id === openRow)
+        if (reopen !== undefined && (selected === null || selected.latest.id !== openRow)) {
+            await openConversation(reopen)
+        }
     })
 
-    const moveTo = (folderId: number) => guard(async () => {
-        if (selected === null) {
-            return
-        }
-        const gone = selected
-        await api.moveMessages(gone.messageIds, folderId)
-        await leave(gone)
-    })
+    const putBack = async (moves: Moved[]): Promise<Map<number, number>> => {
+        const restored = await api.putBack(moves)
 
-    // Every message from the open conversation's sender goes to `next` from now
-    // on; null gives the sender back to the automatic rules.
-    const sortSender = (next: Category | null) => guard(async () => {
-        const sender = selected?.latest.from[0]?.email.trim().toLowerCase()
-        if (sender === undefined || selectedFolder === null) {
+        return new Map(restored.map((entry) => [entry.was, entry.now]))
+    }
+
+    const sortedText = (senders: string[], first: string, next: Category | null): string => {
+        if (next === null) {
+            return t('undo.categoryAuto', { sender: first })
+        }
+        if (senders.length === 1) {
+            return t('undo.category', { sender: first, name: t(`category.${next}`) })
+        }
+
+        return t('undo.categoryMany', { count: String(senders.length), name: t(`category.${next}`) })
+    }
+
+    // Where archiving, reporting spam or moving takes rows.
+    const targetOf = (action: ListAction): Folder | null => {
+        if (action.kind === 'archive') {
+            return archiveFolder
+        }
+        if (action.kind === 'spam') {
+            return spamFolder
+        }
+        if (action.kind === 'move') {
+            return accountFolders.find((candidate) => candidate.id === action.folderId) ?? null
+        }
+
+        return null
+    }
+
+    const movedText = (action: ListAction, target: Folder, named: string): string => {
+        if (action.kind === 'archive') {
+            return t('undo.archived', { what: named })
+        }
+        if (action.kind === 'spam' && target.role === 'Junk') {
+            return t('undo.spam', { what: named })
+        }
+
+        return t('undo.moved', { what: named, folder: folderLabel(target) })
+    }
+
+    // Every message from the rows' senders goes to `next` from now on; null
+    // gives them back to the automatic rules.
+    const sortSenders = async (rows: Conversation[], next: Category | null, snapshot: Snapshot) => {
+        const senders = [...new Set(rows.flatMap((row) => {
+            const sender = row.latest.from[0]?.email.trim().toLowerCase()
+
+            return sender === undefined || sender === '' ? [] : [sender]
+        }))]
+        const first = senders[0]
+        if (first === undefined || selectedFolder === null) {
             return
         }
-        await api.setCategoryRule(sender, next)
+        const folder = selectedFolder
+        const before = senders.map((sender) => ({ sender, category: rules.find((rule) => rule.sender === sender)?.category ?? null }))
+        for (const sender of senders) {
+            await api.setCategoryRule(sender, next)
+        }
         rules = await api.categoryRules()
-        await reloadList(selectedFolder)
+        await reloadList(folder)
+
+        offer(sortedText(senders, first, next), async () => {
+            for (const rule of before) {
+                await api.setCategoryRule(rule.sender, rule.category)
+            }
+            rules = await api.categoryRules()
+
+            return new Map()
+        }, snapshot)
+    }
+
+    // Everything done to rows of the list, wherever it was asked for: their
+    // tools, the selection, the keyboard, a drop, the open message's toolbar.
+    // Each says what it did and can be undone, except deleting for good.
+    const act = (action: ListAction, rows: Conversation[]) => guard(async () => {
+        const folder = selectedFolder
+        if (folder === null || rows.length === 0) {
+            return
+        }
+        const snapshot: Snapshot = { folderId: folder.id, selection: shownSelection, openId: selectedId, category: openCategory }
+        const named = what(rows)
+        // Deleting or moving a conversation takes all of its messages in this folder.
+        const ids = rows.flatMap((row) => row.messageIds)
+        const newest = rows.map((row) => row.latest.id)
+
+        if (action.kind === 'delete') {
+            const moves = await api.deleteMessages(ids)
+            await leave(rows)
+            const kept = moves.filter((entry) => entry.toFolderId !== null)
+            if (kept.length === 0) {
+                say(t('undo.deletedForGood', { what: named }))
+
+                return
+            }
+            offer(t('undo.deleted', { what: named }), () => putBack(kept), snapshot)
+
+            return
+        }
+        if (action.kind === 'archive' || action.kind === 'spam' || action.kind === 'move') {
+            const target = targetOf(action)
+            if (target === null || target.id === folder.id) {
+                return
+            }
+            const moves = await api.moveMessages(ids, target.id)
+            await leave(rows)
+            offer(movedText(action, target, named), () => putBack(moves), snapshot)
+
+            return
+        }
+        if (action.kind === 'seen') {
+            // Read when everything is read: marking unread marks the newest
+            // message, which is enough to bring it back to attention.
+            const changed = await setSeen(action.seen ? ids : newest, action.seen)
+            offer(t(action.seen ? 'undo.read' : 'undo.unread', { what: named }), async () => {
+                await setSeen(changed, !action.seen)
+
+                return new Map()
+            }, snapshot)
+
+            return
+        }
+        if (action.kind === 'star') {
+            // Starring stars the newest message; removing the star clears every star in it.
+            const changed = await setStarred(action.star ? newest : ids, action.star)
+            offer(t(action.star ? 'undo.starred' : 'undo.unstarred', { what: named }), async () => {
+                await setStarred(changed, !action.star)
+
+                return new Map()
+            }, snapshot)
+
+            return
+        }
+
+        await sortSenders(rows, action.category, snapshot)
+    })
+
+    // The open conversation's sender, from its toolbar: the tab follows it there.
+    const sortSender = (next: Category | null) => guard(async () => {
+        const open = selected
+        if (open === null || selectedFolder === null) {
+            return
+        }
+        const snapshot: Snapshot = { folderId: selectedFolder.id, selection: shownSelection, openId: selectedId, category: openCategory }
+        await sortSenders([open], next, snapshot)
         if (next !== null) {
             category = next
         }
     })
+
+    // Back from a message covering the list to the list as it was left.
+    const back = async () => {
+        close()
+        await tick()
+        list?.focusRow()
+    }
+
+    // Escape inside the message goes back too, unless it closes something else first.
+    const readerKey = (event: KeyboardEvent) => {
+        const typing = event.target instanceof HTMLElement && event.target.closest('input, textarea, select, [contenteditable]') !== null
+        if (!full || event.key !== 'Escape' || event.defaultPrevented || typing || document.querySelector(':popover-open') !== null) {
+            return
+        }
+        event.preventDefault()
+        back()
+    }
+
+    // Ctrl+Z undoes what the message at the bottom offers to undo.
+    const windowKey = (event: KeyboardEvent) => {
+        const typing = event.target instanceof HTMLElement && event.target.closest('input, textarea, select, [contenteditable]') !== null
+        const undo = notice?.undo ?? null
+        if (undo === null || typing || event.key !== 'z' || !(event.ctrlKey || event.metaKey) || event.shiftKey) {
+            return
+        }
+        event.preventDefault()
+        undo()
+    }
 
     const forgetRule = (sender: string) => guard(async () => {
         await api.setCategoryRule(sender, null)
@@ -790,6 +1049,7 @@
                     <Sidebar
                         folders={accountFolders}
                         selectedFolderId={selectedFolder?.id ?? null}
+                        {dropTarget}
                         onselect={selectFolder}
                         oncompose={compose}
                     />
@@ -802,62 +1062,78 @@
                     onchange={(width) => resize({ sidebar: clampSidebar(width) })}
                     onreset={() => resize({ sidebar: defaultLayout.sidebar })}
                 />
-                <div class="pane list">
-                    <MessageList
-                        folder={selectedFolder}
-                        conversations={visible}
-                        {tabs}
-                        category={openCategory}
-                        oncategory={(next) => category = next}
-                        {selectedId}
-                        ownEmail={account?.settings.email ?? ''}
-                        {pictures}
-                        {hasMore}
-                        busy={syncing}
-                        onselect={openConversation}
-                        onflag={toggleFlagged}
-                        onrefresh={refresh}
-                        onmore={() => guard(async () => {
-                            if (selectedFolder !== null) {
-                                await sync(selectedFolder, true)
-                            }
-                        })}
-                    />
-                </div>
-                <Splitter
-                    label={t('list.resize')}
-                    value={layout.list}
-                    min={listRange.min}
-                    max={listRange.max}
-                    onchange={(width) => resize({ list: clampList(width) })}
-                    onreset={() => resize({ list: defaultLayout.list })}
-                />
-                <div class="pane reader">
-                    {#if thread !== null && account !== null}
-                        <ConversationView
-                            {api}
-                            {thread}
-                            ownEmail={account.settings.email}
+                <!-- List and message: side by side, or the message over the list,
+                     which stays laid out underneath so it is found as it was left. -->
+                <div class="stage" class:full class:reading>
+                    <div class="pane list" inert={full && reading}>
+                        <MessageList
+                            bind:this={list}
+                            folder={selectedFolder}
+                            conversations={visible}
+                            {tabs}
+                            category={openCategory}
+                            oncategory={(next) => category = next}
+                            {selectedId}
+                            selection={shownSelection}
+                            ownEmail={account?.settings.email ?? ''}
                             {pictures}
-                            remoteImages={settings.remoteImages}
-                            toolbar={actions}
-                            onreply={(message, mode) => guard(() => startReply(message, mode))}
-                            onanswer={answer}
-                            onexpand={expand}
-                            onsave={saveAttachment}
-                            onlink={openLink}
+                            {hasMore}
+                            busy={syncing}
+                            canArchive={archiveFolder !== null}
+                            {spam}
+                            {moveTargets}
+                            onselect={openConversation}
+                            onselection={(next) => selection = next}
+                            onact={act}
+                            ondragover={(target) => dropTarget = target}
+                            onrefresh={refresh}
+                            onmore={() => guard(async () => {
+                                if (selectedFolder !== null) {
+                                    await sync(selectedFolder, true)
+                                }
+                            })}
                         />
-                    {:else}
-                        <Reader
-                            {content}
-                            busy={opening}
-                            remoteAllowed={remoteAllowed || settings.remoteImages}
-                            picture={content === null ? null : senderPicture(pictures, content.summary)}
-                            toolbar={selected === null ? undefined : actions}
-                            onshowremote={showRemote}
-                            onsave={(attachment) => content !== null && saveAttachment(content.summary, attachment)}
-                            onlink={openLink}
+                    </div>
+                    {#if !full}
+                        <Splitter
+                            label={t('list.resize')}
+                            value={layout.list}
+                            min={listRange.min}
+                            max={listRange.max}
+                            onchange={(width) => resize({ list: clampList(width) })}
+                            onreset={() => resize({ list: defaultLayout.list })}
                         />
+                    {/if}
+                    {#if !full || reading}
+                        <!-- svelte-ignore a11y_no_static_element_interactions -->
+                        <div class="pane reader" onkeydown={readerKey}>
+                            {#if thread !== null && account !== null}
+                                <ConversationView
+                                    {api}
+                                    {thread}
+                                    ownEmail={account.settings.email}
+                                    {pictures}
+                                    remoteImages={settings.remoteImages}
+                                    toolbar={actions}
+                                    onreply={(message, mode) => guard(() => startReply(message, mode))}
+                                    onanswer={answer}
+                                    onexpand={expand}
+                                    onsave={saveAttachment}
+                                    onlink={openLink}
+                                />
+                            {:else}
+                                <Reader
+                                    {content}
+                                    busy={opening}
+                                    remoteAllowed={remoteAllowed || settings.remoteImages}
+                                    picture={content === null ? null : senderPicture(pictures, content.summary)}
+                                    toolbar={selected === null ? undefined : actions}
+                                    onshowremote={showRemote}
+                                    onsave={(attachment) => content !== null && saveAttachment(content.summary, attachment)}
+                                    onlink={openLink}
+                                />
+                            {/if}
+                        </div>
                     {/if}
                 </div>
             </div>
@@ -869,8 +1145,9 @@
             {@const conversation = selected}
             <MessageActions
                 seen={conversation.unread === 0}
-                flagged={conversation.flagged}
+                starred={conversation.flagged}
                 canArchive={archiveFolder !== null}
+                {spam}
                 {moveTargets}
                 categories={tabs.map((tab) => tab.category)}
                 category={conversation.category}
@@ -878,11 +1155,13 @@
                 sorted={rules.some((rule) => rule.sender === conversation.latest.from[0]?.email.trim().toLowerCase())}
                 oncategory={sortSender}
                 onreply={reply}
-                onarchive={() => archiveFolder !== null && moveTo(archiveFolder.id)}
-                onmove={moveTo}
-                ondelete={remove}
-                onseen={toggleSeen}
-                onflag={() => toggleFlagged(conversation)}
+                onarchive={() => act({ kind: 'archive' }, [conversation])}
+                onmove={(folderId) => act({ kind: 'move', folderId }, [conversation])}
+                ondelete={() => act({ kind: 'delete' }, [conversation])}
+                onspam={() => act({ kind: 'spam' }, [conversation])}
+                onseen={() => act({ kind: 'seen', seen: conversation.unread > 0 }, [conversation])}
+                onstar={() => act({ kind: 'star', star: !conversation.flagged }, [conversation])}
+                onback={full ? back : undefined}
             />
         {/if}
     {/snippet}
@@ -938,6 +1217,20 @@
             />
         </Modal>
     {/if}
+{/if}
+
+<svelte:window onkeydown={windowKey} />
+
+{#if notice !== null}
+    {@const shown = notice}
+    {#key shown.id}
+        <Toast
+            text={shown.text}
+            action={shown.undo === null ? undefined : { label: t('undo.undo'), run: shown.undo }}
+            closeLabel={t('undo.close')}
+            onclose={() => notice = null}
+        />
+    {/key}
 {/if}
 
 <!-- Outside the workspace: after the very first account it shows while the
@@ -1031,6 +1324,12 @@
         width: var(--sidebar-width);
     }
 
+    /* Beside each other the stage is not a box of its own: list, splitter
+       and reader share the row with the sidebar. */
+    .stage {
+        display: contents;
+    }
+
     /* When the window is too narrow for the chosen widths, the list gives way before the reader does. */
     .list {
         flex: 0 1 var(--list-width);
@@ -1039,6 +1338,22 @@
 
     .reader {
         flex: 1 0 320px;
+    }
+
+    /* Over each other: one cell, the message on top of the list. */
+    .stage.full {
+        flex: 1;
+        display: grid;
+        min-width: 0;
+        min-height: 0;
+    }
+
+    .full > .pane {
+        grid-area: 1 / 1;
+    }
+
+    .full.reading > .list {
+        visibility: hidden;
     }
 
     @media (max-width: 860px) {

@@ -113,6 +113,45 @@ pub struct MessageSummary {
     pub size: u32,
 }
 
+/// Messages one move or delete took out of a folder: what putting them back
+/// needs. A server numbers a moved message anew, so it is found again in its
+/// new folder by its `Message-ID`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct Moved {
+    #[ts(type = "number")]
+    pub from_folder_id: i64,
+    /// Where they went; `None` when they were deleted for good.
+    #[ts(type = "number | null")]
+    pub to_folder_id: Option<i64>,
+    /// They also stayed where they were: nothing leaves an "All mail"
+    /// folder, so a move out of it is a copy.
+    pub kept: bool,
+    pub messages: Vec<MovedMessage>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(export)]
+pub struct MovedMessage {
+    /// Its id before it was moved.
+    #[ts(type = "number")]
+    pub id: i64,
+    /// `None` for a message without one, which cannot be found again.
+    pub message_id: Option<String>,
+}
+
+/// A message that was put back where it was, under its new id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub struct Restored {
+    #[ts(type = "number")]
+    pub was: i64,
+    #[ts(type = "number")]
+    pub now: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[ts(export)]
 pub struct Attachment {

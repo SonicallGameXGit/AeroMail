@@ -76,6 +76,11 @@ pub trait IncomingSession: Send {
         on: bool,
     ) -> MailResult<()>;
     async fn move_messages(&mut self, folder: &str, uids: &[u32], target: &str) -> MailResult<()>;
+    /// Puts copies in `target` and leaves the messages where they are.
+    async fn copy_messages(&mut self, folder: &str, uids: &[u32], target: &str) -> MailResult<()>;
+    /// The UIDs of the messages in `folder` with one of these `Message-ID`s.
+    async fn find_messages(&mut self, folder: &str, message_ids: &[String])
+    -> MailResult<Vec<u32>>;
     /// Removes the messages for good.
     async fn delete_messages(&mut self, folder: &str, uids: &[u32]) -> MailResult<()>;
     async fn append(&mut self, folder: &str, raw: &[u8], seen: bool) -> MailResult<()>;

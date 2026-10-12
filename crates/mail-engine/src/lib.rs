@@ -24,7 +24,7 @@ use mail_core::error::{ErrorKind, MailError, MailResult};
 use mail_core::logo::{is_logo, sender_domain};
 use mail_core::mail::{
     Account, Attachment, Contact, Folder, FolderRole, MailEvent, MessageContent, MessageFlags,
-    MessageSummary, NewMailItem, OutgoingMessage,
+    MessageSummary, Moved, MovedMessage, NewMailItem, OutgoingMessage, Restored,
 };
 use mail_core::oauth::{SignIn, Tokens};
 use mail_core::settings::AppSettings;
@@ -106,6 +106,14 @@ impl IncomingSession for Disconnected {
     }
 
     async fn move_messages(&mut self, _: &str, _: &[u32], _: &str) -> MailResult<()> {
+        disconnected()
+    }
+
+    async fn copy_messages(&mut self, _: &str, _: &[u32], _: &str) -> MailResult<()> {
+        disconnected()
+    }
+
+    async fn find_messages(&mut self, _: &str, _: &[String]) -> MailResult<Vec<u32>> {
         disconnected()
     }
 
@@ -254,6 +262,31 @@ fn keeps_conversations(folder: &Folder) -> bool {
             folder.role,
             FolderRole::Trash | FolderRole::Junk | FolderRole::Drafts
         )
+}
+
+/// Takes messages from `folder` to `target` on the server. Nothing leaves an
+/// "All mail" folder: it holds every message (Gmail's), and taking one out
+/// of it deletes it there, so a move from it is a copy. Returns whether the
+/// messages stayed where they were.
+async fn transfer(
+    session: &mut dyn IncomingSession,
+    folder: &Folder,
+    uids: &[u32],
+    target: &Folder,
+) -> MailResult<bool> {
+    if folder.role == FolderRole::All {
+        session
+            .copy_messages(&folder.path, uids, &target.path)
+            .await?;
+
+        return Ok(true);
+    }
+
+    session
+        .move_messages(&folder.path, uids, &target.path)
+        .await?;
+
+    Ok(false)
 }
 
 /// Oldest first, as a conversation is read. Two messages of the same
@@ -1037,44 +1070,85 @@ impl Engine {
         waiting: &mut dyn IncomingSession,
     ) -> MailResult<()> {
         let _writing = self.folder_lock(inbox.id)?.lock_owned().await;
-        let cached = self.db(|store| store.uids(inbox.id))?;
-        // A folder never synced is caught up by a sync, not announced.
-        let Some(newest) = cached.last().copied() else {
-            return Ok(());
+        self.take_new(account, inbox, waiting, &[]).await?;
+
+        Ok(())
+    }
+
+    /// Takes in what arrived in `folder` after its newest cached message and
+    /// announces it, except the messages whose `Message-ID` is in `quiet`:
+    /// they were put back, which is not news. The caller holds the folder's
+    /// lock. Returns the local id and `Message-ID` of each message taken in.
+    async fn take_new(
+        &self,
+        account: &Account,
+        folder: &Folder,
+        session: &mut dyn IncomingSession,
+        quiet: &[String],
+    ) -> MailResult<Vec<(i64, Option<String>)>> {
+        let cached = self.db(|store| store.uids(folder.id))?;
+        let newest = match cached.last() {
+            Some(newest) => *newest,
+            // Emptied by the move that is being undone: everything is new.
+            None if !quiet.is_empty() => 0,
+            // A folder never synced is caught up by a sync, not announced.
+            None => return Ok(Vec::new()),
         };
 
-        let arrived = waiting.fetch_new(&inbox.path, newest).await?;
+        let arrived = session.fetch_new(&folder.path, newest).await?;
         if arrived.is_empty() {
-            return Ok(());
+            return Ok(Vec::new());
         }
 
         let count = |value: usize| u32::try_from(value).unwrap_or(u32::MAX);
         let unread = count(arrived.iter().filter(|remote| !remote.flags.seen).count());
+        let taken: Vec<NewMessage> = arrived.iter().map(to_new_message).collect();
         let messages = self.db(|store| {
-            for remote in &arrived {
-                store.upsert_message(inbox.id, &to_new_message(remote))?;
+            for message in &taken {
+                store.upsert_message(folder.id, message)?;
             }
-            let folder = store.folder(inbox.id)?;
+            let cached = store.folder(folder.id)?;
             store.set_folder_counts(
-                inbox.id,
-                folder.unread.saturating_add(unread),
-                folder.total.saturating_add(count(arrived.len())),
+                folder.id,
+                cached.unread.saturating_add(unread),
+                cached.total.saturating_add(count(arrived.len())),
             )?;
 
-            store.messages(inbox.id)
+            store.messages(folder.id)
         })?;
-        let uids: Vec<u32> = arrived.iter().map(|remote| remote.uid).collect();
-        let news = self.news(account, inbox, &uids, &messages, waiting).await?;
+        let news_uids: Vec<u32> = taken
+            .iter()
+            .filter(|message| {
+                message
+                    .message_id
+                    .as_ref()
+                    .is_none_or(|id| !quiet.contains(id))
+            })
+            .map(|message| message.uid)
+            .collect();
+        let news = self
+            .news(account, folder, &news_uids, &messages, session)
+            .await?;
 
         self.announce(MailEvent::FolderChanged {
             account_id: account.id,
-            folder_id: inbox.id,
+            folder_id: folder.id,
         });
         if let Some(news) = news {
             self.announce(news);
         }
 
-        Ok(())
+        Ok(taken
+            .into_iter()
+            .filter_map(|message| {
+                let id = messages
+                    .iter()
+                    .find(|summary| summary.uid == message.uid)?
+                    .id;
+
+                Some((id, message.message_id))
+            })
+            .collect())
     }
 
     // Watching
@@ -1254,7 +1328,15 @@ impl Engine {
         })
     }
 
-    pub async fn set_flag(&self, message_ids: &[i64], flag: Flag, on: bool) -> MailResult<()> {
+    /// Sets or clears a flag. Returns the messages it changed: undoing it
+    /// changes back only those.
+    pub async fn set_flag(
+        &self,
+        message_ids: &[i64],
+        flag: Flag,
+        on: bool,
+    ) -> MailResult<Vec<i64>> {
+        let mut changed = Vec::new();
         for (folder_id, messages) in self.by_folder(message_ids)? {
             let folder = self.db(|store| store.folder(folder_id))?;
             let account = self.db(|store| store.account(folder.account_id))?;
@@ -1268,6 +1350,14 @@ impl Engine {
             let mut unread_change = 0;
             for message in &messages {
                 let mut flags = message.flags;
+                let was = match flag {
+                    Flag::Seen => flags.seen,
+                    Flag::Flagged => flags.flagged,
+                    Flag::Answered => flags.answered,
+                };
+                if was != on {
+                    changed.push(message.id);
+                }
                 match flag {
                     Flag::Seen => {
                         if flags.seen != on {
@@ -1283,7 +1373,7 @@ impl Engine {
             self.adjust_counts(folder_id, unread_change, 0)?;
         }
 
-        Ok(())
+        Ok(changed)
     }
 
     fn forget(&self, folder_id: i64, messages: &[MessageSummary]) -> MailResult<()> {
@@ -1298,13 +1388,44 @@ impl Engine {
         self.adjust_counts(folder_id, -count(unread), -count(messages.len()))
     }
 
+    /// What putting `messages` back into `from` needs, read before the cache
+    /// forgets them.
+    fn moved(
+        &self,
+        from: &Folder,
+        to: Option<i64>,
+        kept: bool,
+        messages: &[MessageSummary],
+    ) -> MailResult<Moved> {
+        let ids: HashMap<i64, Option<String>> = self
+            .db(|store| store.threaded(from.id))?
+            .into_iter()
+            .map(|threaded| (threaded.summary.id, threaded.message_id))
+            .collect();
+
+        Ok(Moved {
+            from_folder_id: from.id,
+            to_folder_id: to,
+            kept,
+            messages: messages
+                .iter()
+                .map(|message| MovedMessage {
+                    id: message.id,
+                    message_id: ids.get(&message.id).cloned().flatten(),
+                })
+                .collect(),
+        })
+    }
+
+    /// Returns what putting the messages back needs (`put_back`).
     pub async fn move_messages(
         &self,
         message_ids: &[i64],
         target_folder_id: i64,
-    ) -> MailResult<()> {
+    ) -> MailResult<Vec<Moved>> {
         let target = self.db(|store| store.folder(target_folder_id))?;
 
+        let mut moves = Vec::new();
         for (folder_id, messages) in self.by_folder(message_ids)? {
             if folder_id == target_folder_id {
                 continue;
@@ -1316,19 +1437,25 @@ impl Engine {
             let account = self.db(|store| store.account(folder.account_id))?;
             let uids: Vec<u32> = messages.iter().map(|message| message.uid).collect();
 
-            self.session(&account)
-                .await?
-                .move_messages(&folder.path, &uids, &target.path)
-                .await?;
-            self.forget(folder_id, &messages)?;
+            let mut session = self.session(&account).await?;
+            let kept = transfer(&mut **session, &folder, &uids, &target).await?;
+            drop(session);
+
+            moves.push(self.moved(&folder, Some(target.id), kept, &messages)?);
+            if !kept {
+                self.forget(folder_id, &messages)?;
+            }
         }
 
-        Ok(())
+        Ok(moves)
     }
 
     /// Moves messages to the trash; messages already in the trash, or on an
-    /// account without a trash folder, are removed for good.
-    pub async fn delete_messages(&self, message_ids: &[i64]) -> MailResult<()> {
+    /// account without a trash folder, are removed for good. Returns what
+    /// putting them back needs (`put_back`); nothing brings back what was
+    /// removed for good.
+    pub async fn delete_messages(&self, message_ids: &[i64]) -> MailResult<Vec<Moved>> {
+        let mut moves = Vec::new();
         for (folder_id, messages) in self.by_folder(message_ids)? {
             let folder = self.db(|store| store.folder(folder_id))?;
             let account = self.db(|store| store.account(folder.account_id))?;
@@ -1339,20 +1466,101 @@ impl Engine {
             let uids: Vec<u32> = messages.iter().map(|message| message.uid).collect();
 
             let mut session = self.session(&account).await?;
-            match trash {
+            let to = match trash {
                 Some(trash) if trash.id != folder_id => {
                     session
                         .move_messages(&folder.path, &uids, &trash.path)
                         .await?;
+                    Some(trash.id)
                 }
-                _ => session.delete_messages(&folder.path, &uids).await?,
-            }
+                _ => {
+                    session.delete_messages(&folder.path, &uids).await?;
+                    None
+                }
+            };
             drop(session);
 
+            moves.push(self.moved(&folder, to, false, &messages)?);
             self.forget(folder_id, &messages)?;
         }
 
-        Ok(())
+        Ok(moves)
+    }
+
+    /// Puts moved or deleted messages back where they were (undo). They are
+    /// found in the folder they went to by their `Message-ID`; one that is no
+    /// longer there, or has none, stays where it is. Coming back is not news:
+    /// nothing is announced as new mail. Returns the new ids of the messages
+    /// that came back and are cached again.
+    pub async fn put_back(&self, moves: &[Moved]) -> MailResult<Vec<Restored>> {
+        let mut restored = Vec::new();
+        for moved in moves {
+            let Some(to_id) = moved.to_folder_id else {
+                continue;
+            };
+            let wanted: Vec<String> = moved
+                .messages
+                .iter()
+                .filter_map(|message| message.message_id.clone())
+                .collect();
+            if wanted.is_empty() {
+                continue;
+            }
+            let from = self.db(|store| store.folder(moved.from_folder_id))?;
+            let to = self.db(|store| store.folder(to_id))?;
+            if from.account_id != to.account_id {
+                return Err(invalid("messages cannot be moved to another account"));
+            }
+            let account = self.db(|store| store.account(from.account_id))?;
+
+            // Held from before they come back, so no sync or watcher takes
+            // them in first and announces them.
+            let _writing = self.folder_lock(from.id)?.lock_owned().await;
+            let mut session = self.session(&account).await?;
+            let uids = session.find_messages(&to.path, &wanted).await?;
+            if uids.is_empty() {
+                continue;
+            }
+            let stayed = if moved.kept {
+                // Copies: the messages never left, so only the copies go.
+                session.delete_messages(&to.path, &uids).await?;
+                false
+            } else {
+                transfer(&mut **session, &to, &uids, &from).await?
+            };
+            if !stayed {
+                let cached: Vec<MessageSummary> = self
+                    .db(|store| store.messages(to.id))?
+                    .into_iter()
+                    .filter(|message| uids.contains(&message.uid))
+                    .collect();
+                self.forget(to.id, &cached)?;
+                self.announce(MailEvent::FolderChanged {
+                    account_id: account.id,
+                    folder_id: to.id,
+                });
+            }
+            if moved.kept {
+                continue;
+            }
+
+            let taken = self
+                .take_new(&account, &from, &mut **session, &wanted)
+                .await?;
+            let mut unmatched: Vec<&MovedMessage> = moved.messages.iter().collect();
+            for (now, message_id) in taken {
+                let Some(position) = unmatched
+                    .iter()
+                    .position(|message| message_id.is_some() && message.message_id == message_id)
+                else {
+                    continue;
+                };
+                let was = unmatched.remove(position).id;
+                restored.push(Restored { was, now });
+            }
+        }
+
+        Ok(restored)
     }
 
     // Writing

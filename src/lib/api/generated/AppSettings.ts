@@ -2,6 +2,7 @@
 import type { CategorySettings } from "./CategorySettings";
 import type { ConversationSettings } from "./ConversationSettings";
 import type { NotificationSettings } from "./NotificationSettings";
+import type { ReaderLayout } from "./ReaderLayout";
 import type { Theme } from "./Theme";
 
 export type AppSettings = { 
@@ -16,4 +17,4 @@ remoteImages: boolean,
 /**
  * Adding an account opens it. Off: the open account and message stay.
  */
-switchToNewAccount: boolean, theme: Theme, notifications: NotificationSettings, conversations: ConversationSettings, categories: CategorySettings, };
+switchToNewAccount: boolean, theme: Theme, reader: ReaderLayout, notifications: NotificationSettings, conversations: ConversationSettings, categories: CategorySettings, };

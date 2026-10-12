@@ -67,11 +67,39 @@ async fn within<T>(
     }
 }
 
+/// `Message-ID`s looked for in one search; each one is a long criterion.
+const SEARCH_CHUNK: usize = 20;
+
 fn uid_set(uids: &[u32]) -> String {
     uids.iter()
         .map(u32::to_string)
         .collect::<Vec<_>>()
         .join(",")
+}
+
+/// A search for messages with any of `ids` as their `Message-ID`. `HEADER`
+/// matches a part of the field, so each id is looked for with its brackets.
+/// `ids` are printable ASCII and not empty.
+fn message_id_query(ids: &[&String]) -> String {
+    let criteria: Vec<String> = ids
+        .iter()
+        .map(|id| {
+            let quoted = id.replace('\\', "\\\\").replace('"', "\\\"");
+            format!("HEADER Message-ID \"<{quoted}>\"")
+        })
+        .collect();
+
+    // `OR a b` takes exactly two: a longer list nests, `OR a OR b c`.
+    let mut query = String::new();
+    for (index, criterion) in criteria.iter().enumerate() {
+        if index + 1 < criteria.len() {
+            query.push_str("OR ");
+        }
+        query.push_str(criterion);
+        query.push(' ');
+    }
+
+    query.trim_end().to_string()
 }
 
 fn flags_of(fetch: &Fetch) -> MessageFlags {
@@ -468,6 +496,45 @@ impl IncomingSession for ImapSession {
         self.delete_messages(folder, uids).await
     }
 
+    async fn copy_messages(&mut self, folder: &str, uids: &[u32], target: &str) -> MailResult<()> {
+        self.select(folder).await?;
+        for chunk in uids.chunks(CHUNK) {
+            self.live()?
+                .uid_copy(uid_set(chunk), target)
+                .await
+                .map_err(imap_error)?;
+        }
+
+        Ok(())
+    }
+
+    async fn find_messages(
+        &mut self,
+        folder: &str,
+        message_ids: &[String],
+    ) -> MailResult<Vec<u32>> {
+        self.select(folder).await?;
+        // An id that cannot be written as a quoted string is not searched for.
+        let searchable: Vec<&String> = message_ids
+            .iter()
+            .filter(|id| !id.is_empty() && id.chars().all(|c| c.is_ascii_graphic()))
+            .collect();
+
+        let mut found = Vec::new();
+        for chunk in searchable.chunks(SEARCH_CHUNK) {
+            found.extend(
+                self.live()?
+                    .uid_search(message_id_query(chunk))
+                    .await
+                    .map_err(imap_error)?,
+            );
+        }
+        found.sort_unstable();
+        found.dedup();
+
+        Ok(found)
+    }
+
     async fn delete_messages(&mut self, folder: &str, uids: &[u32]) -> MailResult<()> {
         self.select(folder).await?;
         self.store(uids, "+FLAGS.SILENT (\\Deleted)").await?;
@@ -727,6 +794,18 @@ mod tests {
         );
     }
 
+    #[test]
+    fn several_message_ids_are_searched_for_in_one_nested_or() {
+        let ids = ["a".to_string(), "b".to_string(), "c".to_string()];
+        let refs: Vec<&String> = ids.iter().collect();
+
+        assert_eq!(message_id_query(&refs[..1]), "HEADER Message-ID \"<a>\"");
+        assert_eq!(
+            message_id_query(&refs),
+            "OR HEADER Message-ID \"<a>\" OR HEADER Message-ID \"<b>\" HEADER Message-ID \"<c>\""
+        );
+    }
+
     #[tokio::test]
     async fn sends_the_right_commands_for_changes() {
         let server = FakeImap::start().await;
@@ -741,6 +820,15 @@ mod tests {
             .await
             .unwrap();
         session.move_messages("INBOX", &[5], "Trash").await.unwrap();
+        session
+            .copy_messages("INBOX", &[9], "Archive")
+            .await
+            .unwrap();
+        let found = session
+            .find_messages("Trash", &["a@x".to_string(), "b\"q@x".to_string()])
+            .await
+            .unwrap();
+        assert_eq!(found, vec![5, 9]);
         session.delete_messages("INBOX", &[9]).await.unwrap();
         session
             .append("Sent", b"Subject: Hi\r\n\r\nHello\r\n", true)
@@ -753,6 +841,8 @@ mod tests {
             "UID STORE 5,9 +FLAGS.SILENT (\\Seen)",
             "UID STORE 9 -FLAGS.SILENT (\\Flagged)",
             "UID MOVE 5 \"Trash\"",
+            "UID COPY 9 \"Archive\"",
+            "UID SEARCH OR HEADER Message-ID \"<a@x>\" HEADER Message-ID \"<b\\\"q@x>\"",
             "UID STORE 9 +FLAGS.SILENT (\\Deleted)",
             "UID EXPUNGE 9",
             "APPEND \"Sent\" (\\Seen) {22}",

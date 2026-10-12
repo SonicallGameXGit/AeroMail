@@ -9,7 +9,7 @@ use mail_core::account::{AccountSettings, Protocol, Security};
 use mail_core::category::Category;
 use mail_core::draft::ReplyMode;
 use mail_core::error::{ErrorKind, MailError};
-use mail_core::mail::{MailEvent, OutgoingMessage};
+use mail_core::mail::{MailEvent, Moved, OutgoingMessage};
 use mail_core::settings::AppSettings;
 use mail_core::transport::Flag;
 use mail_engine::Engine;
@@ -115,6 +115,11 @@ struct MessageIds {
 struct Move {
     message_ids: Vec<i64>,
     folder_id: i64,
+}
+
+#[derive(Deserialize)]
+struct PutBack {
+    moves: Vec<Moved>,
 }
 
 #[derive(Deserialize)]
@@ -281,6 +286,10 @@ pub async fn dispatch(engine: &Engine, command: &str, params: Value) -> Result<V
                 folder_id,
             } = args(params)?;
             reply(engine.move_messages(&message_ids, folder_id).await)
+        }
+        "put_back" => {
+            let PutBack { moves } = args(params)?;
+            reply(engine.put_back(&moves).await)
         }
         "reply_draft" => {
             let Reply { message_id, mode } = args(params)?;

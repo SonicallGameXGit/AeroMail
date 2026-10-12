@@ -26,7 +26,7 @@
 
     const replyArrow = 'M10 4.5 3 11l7 6.5v-4c5 0 8.5 1.5 10.5 5 0-6-3.5-10-10.5-10z'
     const folderShape = 'M2.5 7A1.5 1.5 0 0 1 4 5.5h5l2 2h9A1.5 1.5 0 0 1 21.5 9v9.5A1.5 1.5 0 0 1 20 20H4a1.5 1.5 0 0 1-1.5-1.5z'
-    const flagCloth = 'M6.5 4.5c3-1.5 5 1.5 8 .5 1.5-.5 2.5-1 4.5-1v9c-2 0-3 .5-4.5 1-3 1-5-2-8-.5z'
+    const starShape = 'M12 3l2.4 6.3 6.7.3-5.2 4.3 1.7 6.5-5.6-3.7-5.6 3.7 1.7-6.5-5.2-4.3 6.7-.3z'
 </script>
 
 <svg
@@ -90,12 +90,14 @@
     {:else if name === 'mailOpen'}
         <path class="paper" d="M2.5 9.5 12 3l9.5 6.5v10A1.5 1.5 0 0 1 20 21H4a1.5 1.5 0 0 1-1.5-1.5z" fill={paper} />
         <path class="paper" d="M3 10l9 6 9-6" fill="none" />
-    {:else if name === 'flag'}
-        <path class="red" d={flagCloth} fill={red} />
-        <rect class="steel" x="4.5" y="2.5" width="2" height="19" rx="1" fill={steel} />
-    {:else if name === 'flagOff'}
-        <path class="hollow" d={flagCloth} />
-        <rect class="steel" x="4.5" y="2.5" width="2" height="19" rx="1" fill={steel} />
+    {:else if name === 'star'}
+        <path class="gold" d={starShape} fill={gold} />
+        <path class="shine" d="M9 9.6l3-6.6 2.4 6.3 6.7.3-1.6 1.3c-3.5-1.2-7-1.6-10.5-1.3z" />
+    {:else if name === 'starOff'}
+        <path class="hollow" d={starShape} />
+    {:else if name === 'back'}
+        <path class="blue" d="M10.5 4.5 3 12l7.5 7.5V15H21V9H10.5z" fill={blue} />
+        <path class="shine" d="M4.5 11.5 10 6v4h10v2c-5-1-10-1-15.5-.5z" />
     {:else if name === 'refresh'}
         {#each [0, 180] as turn (turn)}
             <g transform={`rotate(${turn} 12 12)`}>

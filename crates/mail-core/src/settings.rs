@@ -17,6 +17,7 @@ pub struct AppSettings {
     /// Adding an account opens it. Off: the open account and message stay.
     pub switch_to_new_account: bool,
     pub theme: Theme,
+    pub reader: ReaderLayout,
     pub notifications: NotificationSettings,
     pub conversations: ConversationSettings,
     pub categories: CategorySettings,
@@ -74,6 +75,16 @@ pub enum Theme {
     Aero,
     /// Longhorn Slate: dark.
     Slate,
+}
+
+/// Where an opened message is shown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[ts(export)]
+pub enum ReaderLayout {
+    /// Next to the message list, both in sight.
+    Beside,
+    /// In place of the list, with a way back to it as it was left.
+    Full,
 }
 
 /// How long a notification stays on screen.
@@ -143,6 +154,7 @@ impl Default for AppSettings {
             remote_images: false,
             switch_to_new_account: true,
             theme: Theme::System,
+            reader: ReaderLayout::Beside,
             notifications: NotificationSettings::default(),
             conversations: ConversationSettings::default(),
             categories: CategorySettings::default(),
@@ -269,6 +281,11 @@ impl AppSettings {
             Some("slate") => Theme::Slate,
             _ => default.theme,
         };
+        let reader = match stored(READER).as_deref() {
+            Some("beside") => ReaderLayout::Beside,
+            Some("full") => ReaderLayout::Full,
+            _ => default.reader,
+        };
         let icon = match stored(ICON).as_deref() {
             Some("sender") => NotificationIcon::Sender,
             Some("app") => NotificationIcon::App,
@@ -282,6 +299,7 @@ impl AppSettings {
             remote_images: switch(REMOTE_IMAGES, default.remote_images),
             switch_to_new_account: switch(SWITCH_TO_NEW_ACCOUNT, default.switch_to_new_account),
             theme,
+            reader,
             notifications: NotificationSettings {
                 enabled: switch(NOTIFICATIONS, base.enabled),
                 sound: switch(SOUND, base.sound),
@@ -324,6 +342,10 @@ impl AppSettings {
             Theme::Aero => "aero",
             Theme::Slate => "slate",
         };
+        let reader = match self.reader {
+            ReaderLayout::Beside => "beside",
+            ReaderLayout::Full => "full",
+        };
         let icon = match notifications.icon {
             NotificationIcon::Sender => "sender",
             NotificationIcon::App => "app",
@@ -336,6 +358,7 @@ impl AppSettings {
             (REMOTE_IMAGES, switch(self.remote_images)),
             (SWITCH_TO_NEW_ACCOUNT, switch(self.switch_to_new_account)),
             (THEME, Some(theme.to_string())),
+            (READER, Some(reader.to_string())),
             (NOTIFICATIONS, switch(notifications.enabled)),
             (SOUND, switch(notifications.sound)),
             (WHILE_FOCUSED, switch(notifications.while_focused)),
@@ -367,6 +390,7 @@ const SENDER_PICTURES: &str = "sender_pictures";
 const REMOTE_IMAGES: &str = "remote_images";
 const SWITCH_TO_NEW_ACCOUNT: &str = "switch_to_new_account";
 const THEME: &str = "theme";
+const READER: &str = "reader_layout";
 const NOTIFICATIONS: &str = "notifications";
 const SOUND: &str = "notification_sound";
 const WHILE_FOCUSED: &str = "notification_while_focused";
@@ -414,6 +438,7 @@ mod tests {
             remote_images: true,
             switch_to_new_account: false,
             theme: Theme::Slate,
+            reader: ReaderLayout::Full,
             notifications: NotificationSettings {
                 enabled: false,
                 sound: false,
